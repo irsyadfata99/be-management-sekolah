@@ -1,0 +1,204 @@
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bukti Pendaftaran - {{no_pendaftaran}}</title>
+    <style>
+      @page { size: A4; margin: 2cm; } * { margin: 0; padding: 0; box-sizing:
+      border-box; } body { font-family: 'Times New Roman', serif; font-size:
+      12px; line-height: 1.4; color: #000; } .header { text-align: center;
+      border-bottom: 3px solid #000; padding-bottom: 15px; margin-bottom: 20px;
+      } .logo { width: 80px; height: 80px; margin: 0 auto 10px; } .school-name {
+      font-size: 18px; font-weight: bold; margin-bottom: 5px; text-transform:
+      uppercase; } .document-title { font-size: 16px; font-weight: bold; margin:
+      10px 0; text-decoration: underline; } .year { font-size: 14px;
+      font-weight: bold; } .registration-info { background: #f0f0f0; padding:
+      15px; border: 2px solid #000; margin: 20px 0; text-align: center; }
+      .reg-number { font-size: 24px; font-weight: bold; color: #d32f2f;
+      margin-bottom: 5px; } .reg-pin { font-size: 18px; font-weight: bold;
+      color: #1976d2; } .content-section { margin: 20px 0; } .section-title {
+      font-size: 14px; font-weight: bold; background: #e3f2fd; padding: 8px;
+      border-left: 4px solid #1976d2; margin-bottom: 10px; } .info-table {
+      width: 100%; border-collapse: collapse; margin-bottom: 15px; } .info-table
+      td { padding: 5px 8px; border: 1px solid #ddd; vertical-align: top; }
+      .info-table .label { background: #f5f5f5; font-weight: bold; width: 30%; }
+      .status-badge { display: inline-block; padding: 5px 15px; border-radius:
+      20px; font-weight: bold; color: white; background-color:
+      {{status_color}}; text-align: center; margin: 10px 0; } .qr-section {
+      text-align: center; margin: 20px 0; border: 1px dashed #666; padding:
+      15px; } .qr-code { margin: 10px 0; } .footer-notes { margin-top: 30px;
+      padding: 15px; background: #fff3cd; border: 1px solid #ffc107;
+      border-radius: 5px; } .footer-notes h4 { color: #856404; margin-bottom:
+      10px; } .footer-notes ul { color: #856404; padding-left: 20px; }
+      .footer-notes li { margin-bottom: 5px; } .signature-section { margin-top:
+      40px; display: flex; justify-content: space-between; } .signature-box {
+      text-align: center; width: 200px; } .signature-line { border-bottom: 1px
+      solid #000; height: 60px; margin-bottom: 5px; } @media print { .no-print {
+      display: none; } }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      {{#if school.logo_path}}
+        <img src="{{school.logo_path}}" alt="Logo Sekolah" class="logo" />
+      {{/if}}
+      <div class="school-name">{{school.nama_sekolah}}</div>
+      <div>{{school.alamat_lengkap}}</div>
+      <div>Telp: {{school.telepon}} | Email: {{school.email}}</div>
+      <div class="document-title">BUKTI PENDAFTARAN SISWA BARU</div>
+      <div class="year">TAHUN AJARAN {{school.academic_year}}</div>
+    </div>
+
+    <div class="registration-info">
+      <div>NOMOR PENDAFTARAN</div>
+      <div class="reg-number">{{no_pendaftaran}}</div>
+      <div>PIN LOGIN</div>
+      <div class="reg-pin">{{pin_login}}</div>
+      <div style="margin-top: 10px;">Tanggal Pendaftaran:
+        {{formatted_tanggal_daftar}}</div>
+    </div>
+
+    <div class="content-section">
+      <div class="section-title">BIODATA SISWA</div>
+      <table class="info-table">
+        <tr>
+          <td class="label">Nama Lengkap</td>
+          <td>{{nama_lengkap}}</td>
+          {{#if nisn}}
+            <td class="label">NISN</td>
+            <td>{{nisn}}</td>
+          {{/if}}
+        </tr>
+        <tr>
+          <td class="label">Jenis Kelamin</td>
+          <td>{{jenis_kelamin}}</td>
+          <td class="label">WhatsApp</td>
+          <td>{{nomor_whatsapp_aktif}}</td>
+        </tr>
+        <tr>
+          <td class="label">Tempat/Tanggal Lahir</td>
+          <td>{{tempat_lahir}}, {{formatted_tanggal_lahir}}</td>
+          <td class="label">Agama</td>
+          <td>{{agama}}</td>
+        </tr>
+        <tr>
+          <td class="label">Alamat Lengkap</td>
+          <td colspan="3">{{alamat_siswa}}</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="content-section">
+      <div class="section-title">DATA ORANG TUA</div>
+      <table class="info-table">
+        <tr>
+          <td class="label">Nama Orang Tua</td>
+          <td>{{nama_orang_tua}}</td>
+          <td class="label">Pekerjaan</td>
+          <td>{{pekerjaan_orang_tua}}</td>
+        </tr>
+        {{#if nomor_whatsapp_ortu}}
+          <tr>
+            <td class="label">WhatsApp Orang Tua</td>
+            <td>{{nomor_whatsapp_ortu}}</td>
+            <td class="label">Instansi</td>
+            <td>{{instansi_orang_tua}}</td>
+          </tr>
+        {{/if}}
+        {{#if alamat_orang_tua}}
+          <tr>
+            <td class="label">Alamat Orang Tua</td>
+            <td colspan="3">{{alamat_orang_tua}}</td>
+          </tr>
+        {{/if}}
+      </table>
+    </div>
+
+    <div class="content-section">
+      <div class="section-title">ASAL SEKOLAH</div>
+      <table class="info-table">
+        <tr>
+          <td class="label">Asal Sekolah</td>
+          <td>{{asal_sekolah}}</td>
+          <td class="label">Tahun Lulus</td>
+          <td>{{tahun_lulus}}</td>
+        </tr>
+        {{#if alamat_sekolah}}
+          <tr>
+            <td class="label">Alamat Sekolah</td>
+            <td colspan="3">{{alamat_sekolah}}</td>
+          </tr>
+        {{/if}}
+      </table>
+    </div>
+
+    <div class="content-section">
+      <div class="section-title">PILIHAN PROGRAM KEAHLIAN</div>
+      <table class="info-table">
+        <tr>
+          <td class="label">Jurusan Dipilih</td>
+          <td>{{nama_jurusan}} ({{kode_jurusan}})</td>
+        </tr>
+        <tr>
+          <td class="label">Jenis Pembayaran</td>
+          <td>{{nama_pembayaran}}</td>
+        </tr>
+        <tr>
+          <td class="label">Total Pembayaran</td>
+          <td><strong>Rp {{total_pembayaran}}</strong></td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="content-section">
+      <div class="section-title">STATUS PENDAFTARAN</div>
+      <div class="status-badge">{{status_text}}</div>
+      {{#if catatan_admin}}
+        <div style="margin-top: 10px;"><strong>Catatan Admin:</strong>
+          {{catatan_admin}}</div>
+      {{/if}}
+    </div>
+
+    {{#if qr_code}}
+      <div class="qr-section">
+        <div><strong>Kode Verifikasi</strong></div>
+        <div class="qr-code">
+          <img
+            src="{{qr_code}}"
+            alt="QR Code"
+            style="width: 120px; height: 120px;"
+          />
+        </div>
+        <div style="font-size: 10px;">Scan untuk verifikasi data pendaftar</div>
+      </div>
+    {{/if}}
+
+    <div class="footer-notes">
+      <h4>CATATAN PENTING:</h4>
+      <ul>
+        <li>Simpan bukti pendaftaran ini dengan baik sebagai tanda bukti
+          pendaftaran yang sah</li>
+        <li>Gunakan Nomor Pendaftaran dan PIN untuk mengecek status pendaftaran
+          secara online</li>
+        <li>Pengumuman hasil seleksi akan diumumkan sesuai dengan jadwal yang
+          telah ditentukan</li>
+        <li>Bawa bukti pendaftaran ini saat melakukan daftar ulang jika diterima</li>
+        <li>Jika ada pertanyaan, hubungi panitia PPDB di nomor telepon sekolah</li>
+      </ul>
+    </div>
+
+    <div class="signature-section">
+      <div class="signature-box">
+        <div>{{tanggal_cetak}}</div>
+        <div style="margin: 10px 0;">Panitia PPDB</div>
+        <div class="signature-line"></div>
+        <div><strong>{{school.nama_sekolah}}</strong></div>
+      </div>
+      <div class="signature-box">
+        <div style="margin-top: 30px;">Pendaftar</div>
+        <div class="signature-line"></div>
+        <div><strong>{{nama_lengkap}}</strong></div>
+      </div>
+    </div>
+  </body>
+</html>

@@ -7,6 +7,9 @@ const dotenv = require("dotenv");
 const path = require("path");
 const fs = require("fs");
 
+const SecurityManager = require("./src/middleware/security");
+const databaseOptimization = require("./src/services/databaseOptimization");
+
 // Load environment variables
 dotenv.config();
 
@@ -33,10 +36,6 @@ uploadDirs.forEach((dir) => {
     console.log(`Created directory: ${dir}`);
   }
 });
-
-// =============================================================================
-// HEALTH CHECK ENDPOINTS
-// =============================================================================
 
 // GET /api/health - Server health check
 app.get("/api/health", async (req, res) => {
@@ -146,24 +145,18 @@ app.get("/api/health/system", (req, res) => {
     },
     timestamp: new Date().toISOString(),
   });
-});
-
-// =============================================================================
-// API ROUTES - SIMPLE TEMPLATE SYSTEM
+}); // API ROUTES - SIMPLE TEMPLATE SYSTEM
 // =============================================================================
 
-// Public SPMB routes (no authentication required)
 app.use("/api/spmb", require("./src/routes/spmb"));
-
-// Admin management routes (authentication required)
 app.use("/api/admin", require("./src/routes/admin"));
-
-// Legacy auth route for backward compatibility
 app.use("/api/auth", require("./src/routes/auth"));
-
-// =============================================================================
-// API DOCUMENTATION ENDPOINT
-// =============================================================================
+app.use("/api/settings", require("./src/routes/settings"));
+app.use("/api/email", require("./src/routes/email"));
+app.use("/api/export", require("./src/routes/export"));
+app.use("/api/calendar", require("./src/routes/calendar"));
+app.use("/api/security", require("./src/routes/security"));
+app.use("/api/optimization", require("./src/routes/optimization"));
 
 app.get("/api/docs", async (req, res) => {
   try {

@@ -1,5 +1,6 @@
 // UPDATED: src/routes/spmb.js
 // Simple SPMB Registration for Single-Tenant Template
+// Added PDF generation functionality and Email notification integration
 
 const express = require("express");
 const router = express.Router();
@@ -7,6 +8,10 @@ const { pool } = require("../config/database");
 const multer = require("multer");
 const path = require("path");
 const AuthUtils = require("../utils/auth");
+
+// Import Services
+const PDFService = require("../services/pdfService");
+const EmailService = require("../services/emailService");
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -387,7 +392,7 @@ router.get("/form-config", async (req, res) => {
   }
 });
 
-// POST /api/spmb/register - Student registration
+// POST /api/spmb/register - Student registration with EMAIL INTEGRATION
 router.post("/register", (req, res) => {
   upload(req, res, async (err) => {
     if (err) {
@@ -599,6 +604,21 @@ router.post("/register", (req, res) => {
         [result.insertId]
       );
 
+      // NEW: AUTO-SEND REGISTRATION EMAIL
+      try {
+        if (process.env.SEND_EMAILS !== "false") {
+          console.log("=== SENDING REGISTRATION EMAIL ===");
+          await EmailService.sendRegistrationSuccess(result.insertId);
+          console.log("✅ Registration email sent successfully");
+        }
+      } catch (emailError) {
+        console.error(
+          "⚠️ Registration email failed (but registration successful):",
+          emailError.message
+        );
+        // Don't throw error - registration was successful, email is bonus
+      }
+
       res.status(201).json({
         success: true,
         message: "Pendaftaran berhasil! Terima kasih atas partisipasinya.",
@@ -612,6 +632,12 @@ router.post("/register", (req, res) => {
           total_pembayaran: registrationData[0]?.total_pembayaran,
           status_pendaftaran: "pending",
           bukti_pdf_url: `/api/spmb/bukti/${no_pendaftaran}`,
+          // PDF generation links
+          generate_pdf_url: `/api/spmb/generate-pdf/${result.insertId}`,
+          download_pdf_url: `/api/spmb/download-pdf/${result.insertId}`,
+          // Email notification info
+          email_notification:
+            process.env.SEND_EMAILS !== "false" ? "sent" : "disabled",
           school_info: {
             name: registrationData[0]?.school_name,
             contact_person: registrationData[0]?.contact_person,
@@ -632,7 +658,8 @@ router.post("/register", (req, res) => {
           },
           next_steps: [
             "Simpan nomor pendaftaran dan PIN Anda",
-            "Screenshot atau print bukti pendaftaran",
+            "Check email untuk konfirmasi pendaftaran",
+            "Generate dan download bukti pendaftaran PDF",
             "Hubungi sekolah jika ada pertanyaan",
             "Pantau status pendaftaran secara berkala",
           ],
@@ -685,6 +712,7 @@ router.get("/check-status/:no_pendaftaran/:pin", async (req, res) => {
       success: true,
       message: "Data pendaftaran ditemukan",
       data: {
+        id: pendaftar.id,
         no_pendaftaran: pendaftar.no_pendaftaran,
         nama_lengkap: pendaftar.nama_lengkap,
         pilihan_jurusan: pendaftar.nama_jurusan,
@@ -694,6 +722,10 @@ router.get("/check-status/:no_pendaftaran/:pin", async (req, res) => {
         catatan_admin: pendaftar.catatan_admin,
         tanggal_daftar: pendaftar.tanggal_daftar,
         bukti_pdf_url: `/api/spmb/bukti/${pendaftar.no_pendaftaran}`,
+        // PDF generation links
+        generate_pdf_url: `/api/spmb/generate-pdf/${pendaftar.id}`,
+        download_pdf_url: `/api/spmb/download-pdf/${pendaftar.id}`,
+        pdf_ready: !!pendaftar.bukti_pdf_path,
         school_name: pendaftar.school_name,
       },
     });
@@ -707,7 +739,7 @@ router.get("/check-status/:no_pendaftaran/:pin", async (req, res) => {
   }
 });
 
-// GET /api/spmb/bukti/:no_pendaftaran - Generate PDF bukti pendaftaran
+// GET /api/spmb/bukti/:no_pendaftaran - Generate HTML bukti pendaftaran (EXISTING FUNCTION PRESERVED)
 router.get("/bukti/:no_pendaftaran", async (req, res) => {
   try {
     const { no_pendaftaran } = req.params;
@@ -750,7 +782,362 @@ router.get("/bukti/:no_pendaftaran", async (req, res) => {
   }
 });
 
-// Generate HTML bukti with school branding
+// =============================================================================
+// PDF ENDPOINTS - Professional PDF Generation
+// =============================================================================
+
+// POST /api/spmb/generate-pdf/:id - Generate PDF bukti pendaftaran
+router.post("/generate-pdf/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log(`=== PDF GENERATION REQUEST for ID: ${id} ===`);
+
+    // Validate pendaftar exists
+    const [pendaftarCheck] = await pool.execute(
+      "SELECT id, no_pendaftaran, nama_lengkap FROM pendaftar_spmb WHERE id = ?",
+      [id]
+    );
+
+    if (pendaftarCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Data pendaftar tidak ditemukan",
+      });
+    }
+
+    // Initialize PDF Service
+    const pdfService = new PDFService();
+
+    // Generate PDF
+    const result = await pdfService.generateBuktiPendaftaran(parseInt(id));
+
+    res.json({
+      success: true,
+      message: "PDF bukti pendaftaran berhasil digenerate",
+      data: {
+        filename: result.filename,
+        size: result.size,
+        pendaftar: result.pendaftar_data,
+        download_url: `/api/spmb/download-pdf/${id}`,
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error("Generate PDF Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal generate PDF bukti pendaftaran",
+      error: error.message,
+    });
+  }
+});
+
+// GET /api/spmb/download-pdf/:id - Download PDF bukti pendaftaran
+router.get("/download-pdf/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log(`=== PDF DOWNLOAD REQUEST for ID: ${id} ===`);
+
+    // Get pendaftar data and PDF path
+    const [rows] = await pool.execute(
+      "SELECT id, no_pendaftaran, nama_lengkap, bukti_pdf_path FROM pendaftar_spmb WHERE id = ?",
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Data pendaftar tidak ditemukan",
+      });
+    }
+
+    const pendaftar = rows[0];
+
+    // Check if PDF exists, if not generate it
+    if (!pendaftar.bukti_pdf_path) {
+      console.log("PDF not found, generating new PDF...");
+      const pdfService = new PDFService();
+      const generateResult = await pdfService.generateBuktiPendaftaran(
+        parseInt(id)
+      );
+      pendaftar.bukti_pdf_path = generateResult.filename;
+    }
+
+    // Get PDF from storage
+    const pdfService = new PDFService();
+    const pdfBuffer = await pdfService.getPDFFromStorage(
+      pendaftar.bukti_pdf_path
+    );
+
+    // Set response headers for PDF download
+    const fileName = `Bukti-Pendaftaran-${
+      pendaftar.no_pendaftaran
+    }-${pendaftar.nama_lengkap.replace(/\s+/g, "-")}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.setHeader("Content-Length", pdfBuffer.length);
+
+    // Send PDF buffer
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error("Download PDF Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal download PDF bukti pendaftaran",
+      error: error.message,
+    });
+  }
+});
+
+// GET /api/spmb/pdf-status/:id - Check PDF generation status
+router.get("/pdf-status/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const pdfService = new PDFService();
+    const status = await pdfService.checkPDFExists(parseInt(id));
+
+    res.json({
+      success: true,
+      data: status,
+    });
+  } catch (error) {
+    console.error("Check PDF Status Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal cek status PDF",
+      error: error.message,
+    });
+  }
+});
+
+// PUBLIC ENDPOINT: GET /api/spmb/public/download-pdf/:no_pendaftaran/:pin
+router.get("/public/download-pdf/:no_pendaftaran/:pin", async (req, res) => {
+  try {
+    const { no_pendaftaran, pin } = req.params;
+    console.log(
+      `=== PUBLIC PDF DOWNLOAD: ${no_pendaftaran} with PIN: ${pin} ===`
+    );
+
+    // Verify nomor pendaftaran and PIN
+    const [rows] = await pool.execute(
+      "SELECT id, nama_lengkap, bukti_pdf_path FROM pendaftar_spmb WHERE no_pendaftaran = ? AND pin_login = ?",
+      [no_pendaftaran, pin]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Data pendaftaran tidak ditemukan atau PIN salah",
+      });
+    }
+
+    const pendaftar = rows[0];
+
+    // Check if PDF exists, if not generate it
+    if (!pendaftar.bukti_pdf_path) {
+      console.log("PDF not found, generating new PDF...");
+      const pdfService = new PDFService();
+      const generateResult = await pdfService.generateBuktiPendaftaran(
+        pendaftar.id
+      );
+      pendaftar.bukti_pdf_path = generateResult.filename;
+    }
+
+    // Get PDF from storage
+    const pdfService = new PDFService();
+    const pdfBuffer = await pdfService.getPDFFromStorage(
+      pendaftar.bukti_pdf_path
+    );
+
+    // Set response headers for PDF download
+    const fileName = `Bukti-Pendaftaran-${no_pendaftaran}-${pendaftar.nama_lengkap.replace(
+      /\s+/g,
+      "-"
+    )}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.setHeader("Content-Length", pdfBuffer.length);
+
+    // Send PDF buffer
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error("Public Download PDF Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal download PDF bukti pendaftaran",
+      error: error.message,
+    });
+  }
+});
+
+// =============================================================================
+// ADMIN ENDPOINTS (Require authentication - add your auth middleware)
+// =============================================================================
+
+// GET /api/spmb/admin/list - Get all registrations (add authentication middleware)
+router.get("/admin/list", async (req, res) => {
+  try {
+    const { page = 1, limit = 20, status, jurusan } = req.query;
+    const offset = (page - 1) * limit;
+
+    let query = `
+      SELECT 
+        p.*, 
+        j.nama_jurusan, 
+        po.nama_pembayaran, 
+        po.total_pembayaran
+      FROM pendaftar_spmb p 
+      LEFT JOIN jurusan j ON p.pilihan_jurusan_id = j.id 
+      LEFT JOIN payment_options po ON p.pilihan_pembayaran_id = po.id
+      WHERE 1=1
+    `;
+
+    const queryParams = [];
+
+    if (status) {
+      query += " AND p.status_pendaftaran = ?";
+      queryParams.push(status);
+    }
+
+    if (jurusan) {
+      query += " AND p.pilihan_jurusan_id = ?";
+      queryParams.push(jurusan);
+    }
+
+    query += " ORDER BY p.tanggal_daftar DESC LIMIT ? OFFSET ?";
+    queryParams.push(parseInt(limit), offset);
+
+    const [rows] = await pool.execute(query, queryParams);
+
+    // Get total count
+    let countQuery = "SELECT COUNT(*) as total FROM pendaftar_spmb WHERE 1=1";
+    const countParams = [];
+
+    if (status) {
+      countQuery += " AND status_pendaftaran = ?";
+      countParams.push(status);
+    }
+
+    if (jurusan) {
+      countQuery += " AND pilihan_jurusan_id = ?";
+      countParams.push(jurusan);
+    }
+
+    const [countRows] = await pool.execute(countQuery, countParams);
+    const total = countRows[0].total;
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error("Admin list error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal mengambil data pendaftar",
+      error: error.message,
+    });
+  }
+});
+
+// =============================================================================
+// ADMIN UPDATE STATUS WITH EMAIL NOTIFICATION
+// =============================================================================
+
+// PUT /api/spmb/admin/update-status/:id - Update status with email notification
+router.put("/admin/update-status/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status_baru, catatan_admin } = req.body;
+
+    console.log(`=== UPDATE STATUS for ID: ${id} to ${status_baru} ===`);
+
+    // Validate status values
+    const validStatuses = ["pending", "diterima", "ditolak"];
+    if (!validStatuses.includes(status_baru)) {
+      return res.status(400).json({
+        success: false,
+        message: "Status tidak valid. Pilihan: pending, diterima, ditolak",
+      });
+    }
+
+    // Get current status
+    const [currentData] = await pool.execute(
+      "SELECT status_pendaftaran, nama_lengkap FROM pendaftar_spmb WHERE id = ?",
+      [id]
+    );
+
+    if (currentData.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Data pendaftar tidak ditemukan",
+      });
+    }
+
+    const statusLama = currentData[0].status_pendaftaran;
+
+    // Update status in database
+    await pool.execute(
+      "UPDATE pendaftar_spmb SET status_pendaftaran = ?, catatan_admin = ?, updated_at = NOW() WHERE id = ?",
+      [status_baru, catatan_admin || null, id]
+    );
+
+    // Send status update email if status changed
+    try {
+      if (statusLama !== status_baru && process.env.SEND_EMAILS !== "false") {
+        console.log("=== SENDING STATUS UPDATE EMAIL ===");
+        await EmailService.sendStatusUpdate(
+          parseInt(id),
+          status_baru,
+          catatan_admin
+        );
+        console.log("✅ Status update email sent successfully");
+      }
+    } catch (emailError) {
+      console.error(
+        "⚠️ Status update email failed (but status updated successfully):",
+        emailError.message
+      );
+      // Don't throw error - status was updated successfully, email is bonus
+    }
+
+    res.json({
+      success: true,
+      message: "Status berhasil diperbarui",
+      data: {
+        id: parseInt(id),
+        status_lama: statusLama,
+        status_baru: status_baru,
+        catatan_admin: catatan_admin,
+        email_notification:
+          statusLama !== status_baru && process.env.SEND_EMAILS !== "false"
+            ? "sent"
+            : "skipped",
+        updated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error("Update status error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal mengupdate status",
+      error: error.message,
+    });
+  }
+});
+
+// =============================================================================
+// EXISTING FUNCTION PRESERVED - Generate HTML bukti with school branding
+// =============================================================================
 function generateBuktiHTML(pendaftar) {
   const primaryColor = pendaftar.primary_color || "#007bff";
   const secondaryColor = pendaftar.secondary_color || "#6c757d";
@@ -879,6 +1266,23 @@ function generateBuktiHTML(pendaftar) {
             .print-btn:hover { 
                 background: ${secondaryColor}; 
             }
+            .pdf-btn { 
+                background: #28a745; 
+                color: white; 
+                padding: 15px 30px; 
+                border: none; 
+                cursor: pointer; 
+                margin: 10px auto;
+                display: block;
+                border-radius: 5px;
+                font-size: 16px;
+                text-decoration: none;
+                text-align: center;
+                transition: background 0.3s;
+            }
+            .pdf-btn:hover { 
+                background: #218838; 
+            }
             .footer {
                 text-align: center;
                 margin-top: 30px;
@@ -895,7 +1299,7 @@ function generateBuktiHTML(pendaftar) {
                 border: 1px solid #dee2e6;
             }
             @media print { 
-                .print-btn { display: none; } 
+                .print-btn, .pdf-btn { display: none; } 
                 body { background: white; }
                 .container { box-shadow: none; }
                 .section { break-inside: avoid; }
@@ -1078,7 +1482,28 @@ function generateBuktiHTML(pendaftar) {
             </div>
         </div>
         
-        <button class="print-btn" onclick="window.print()">Print PDF</button>
+        <!-- PDF Download Button -->
+        <a href="/api/spmb/download-pdf/${
+          pendaftar.id
+        }" class="pdf-btn">📄 Download PDF Professional</a>
+        <button class="print-btn" onclick="window.print()">🖨️ Print Halaman</button>
+
+        <script>
+        // Auto-generate PDF after page load
+        document.addEventListener('DOMContentLoaded', function() {
+            // Auto-generate PDF in background if not exists
+            fetch('/api/spmb/generate-pdf/${pendaftar.id}', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        console.log('PDF generated successfully');
+                    }
+                })
+                .catch(error => {
+                    console.error('PDF generation error:', error);
+                });
+        });
+        </script>
     </body>
     </html>
   `;
