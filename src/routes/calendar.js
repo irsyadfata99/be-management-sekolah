@@ -1,92 +1,414 @@
-// src/routes/calendar.js - Academic Calendar Management System
+// src/routes/calendar.js - Complete Academic Calendar Management
 const express = require("express");
-const router = express.Router();
+const { body, query, param, validationResult } = require("express-validator");
 const { pool } = require("../config/database");
+const { authenticateToken, requirePermission } = require("../middleware/auth");
 
-// Database migration for academic calendar (run this first)
-const createCalendarTable = async () => {
-  try {
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS academic_calendar (
-        id INT PRIMARY KEY AUTO_INCREMENT,
-        title VARCHAR(255) NOT NULL,
-        description TEXT,
-        event_type ENUM('academic', 'exam', 'holiday', 'registration', 'orientation', 'graduation', 'other') DEFAULT 'academic',
-        start_date DATE NOT NULL,
-        end_date DATE,
-        start_time TIME,
-        end_time TIME,
-        is_all_day BOOLEAN DEFAULT FALSE,
-        location VARCHAR(255),
-        color VARCHAR(7) DEFAULT '#007bff',
-        is_public BOOLEAN DEFAULT TRUE,
-        academic_year VARCHAR(10) NOT NULL,
-        semester ENUM('ganjil', 'genap', 'both') DEFAULT 'both',
-        created_by INT,
-        status ENUM('active', 'cancelled', 'completed') DEFAULT 'active',
-        reminder_days INT DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        
-        INDEX idx_start_date (start_date),
-        INDEX idx_academic_year (academic_year),
-        INDEX idx_event_type (event_type),
-        INDEX idx_status (status)
-      )
-    `);
-    console.log("✅ Academic calendar table ensured");
-  } catch (error) {
-    console.error("❌ Error creating calendar table:", error);
+const router = express.Router();
+
+// =============================================================================
+// VALIDATION MIDDLEWARE
+// =============================================================================
+
+const validateCalendarEvent = [
+  body("title").trim().isLength({ min: 3, max: 255 }).withMessage("Title must be between 3-255 characters"),
+
+  body("description").optional().trim().isLength({ max: 1000 }).withMessage("Description max 1000 characters"),
+
+  body("event_type").isIn(["academic", "exam", "holiday", "registration", "orientation", "graduation", "other"]).withMessage("Invalid event type"),
+
+  body("start_date").isDate().withMessage("Valid start date required (YYYY-MM-DD)"),
+
+  body("end_date")
+    .optional()
+    .isDate()
+    .custom((value, { req }) => {
+      if (value && new Date(value) < new Date(req.body.start_date)) {
+        throw new Error("End date must be after start date");
+      }
+      return true;
+    }),
+
+  body("start_time")
+    .optional()
+    .matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+    .withMessage("Invalid start time format (HH:MM)"),
+
+  body("end_time")
+    .optional()
+    .matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+    .withMessage("Invalid end time format (HH:MM)")
+    .custom((value, { req }) => {
+      if (value && req.body.start_time && value <= req.body.start_time) {
+        throw new Error("End time must be after start time");
+      }
+      return true;
+    }),
+
+  body("is_all_day").optional().isBoolean().withMessage("is_all_day must be boolean"),
+
+  body("location").optional().trim().isLength({ max: 255 }).withMessage("Location max 255 characters"),
+
+  body("color")
+    .optional()
+    .matches(/^#[0-9A-Fa-f]{6}$/)
+    .withMessage("Color must be valid hex code (#RRGGBB)"),
+
+  body("is_public").optional().isBoolean().withMessage("is_public must be boolean"),
+
+  body("academic_year")
+    .matches(/^20\d{2}\/20\d{2}$/)
+    .withMessage("Academic year format: YYYY/YYYY"),
+
+  body("semester").isIn(["ganjil", "genap", "both"]).withMessage("Semester must be: ganjil, genap, or both"),
+
+  body("reminder_days").optional().isInt({ min: 0, max: 365 }).withMessage("Reminder days: 0-365"),
+];
+
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: "Validation failed",
+      errors: errors.array().map((err) => ({
+        field: err.path,
+        message: err.msg,
+        value: err.value,
+      })),
+    });
   }
+  next();
 };
 
-// Initialize table on module load
-createCalendarTable();
+// =============================================================================
+// PUBLIC ROUTES (No Authentication Required)
+// =============================================================================
 
-// GET /api/calendar - Final fix using pool.query
-router.get("/", async (req, res) => {
-  try {
-    const { limit = 10 } = req.query;
+// GET /api/calendar/public/events - Public calendar events
+router.get(
+  "/public/events",
+  [
+    query("year").optional().isInt({ min: 2020, max: 2030 }),
+    query("month").optional().isInt({ min: 1, max: 12 }),
+    query("event_type").optional().isIn(["academic", "exam", "holiday", "registration", "orientation", "graduation", "other"]),
+    query("limit").optional().isInt({ min: 1, max: 100 }),
+    handleValidationErrors,
+  ],
+  async (req, res) => {
+    try {
+      const { year, month, event_type, limit = 50 } = req.query;
 
-    const query = `
+      let sql = `
       SELECT 
         id, title, description, event_type, start_date, end_date,
         start_time, end_time, is_all_day, location, color,
-        is_public, academic_year, semester, status, reminder_days,
-        created_at, updated_at
+        academic_year, semester, status
       FROM academic_calendar 
-      ORDER BY start_date ASC 
-      LIMIT ${parseInt(limit)}
+      WHERE is_public = TRUE AND status = 'active'
     `;
 
-    console.log("Final calendar query:", query);
+      const params = [];
 
-    // Use pool.query instead of pool.execute to avoid prepared statement issue
-    const [events] = await pool.query(query);
+      // Filter by year/month
+      if (year) {
+        sql += ` AND YEAR(start_date) = ?`;
+        params.push(year);
+      }
+
+      if (month) {
+        sql += ` AND MONTH(start_date) = ?`;
+        params.push(month);
+      }
+
+      // Filter by event type
+      if (event_type) {
+        sql += ` AND event_type = ?`;
+        params.push(event_type);
+      }
+
+      sql += ` ORDER BY start_date ASC, start_time ASC LIMIT ?`;
+      params.push(parseInt(limit));
+
+      const [events] = await pool.execute(sql, params);
+
+      // Format events for frontend
+      const formattedEvents = events.map((event) => ({
+        id: event.id,
+        title: event.title,
+        description: event.description,
+        type: event.event_type,
+        startDate: event.start_date,
+        endDate: event.end_date,
+        startTime: event.start_time,
+        endTime: event.end_time,
+        isAllDay: event.is_all_day,
+        location: event.location,
+        color: event.color,
+        academicYear: event.academic_year,
+        semester: event.semester,
+        status: event.status,
+      }));
+
+      res.json({
+        success: true,
+        message: "Public calendar events retrieved successfully",
+        data: {
+          events: formattedEvents,
+          total: formattedEvents.length,
+          filters: { year, month, event_type, limit },
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("Get public events error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to retrieve public events",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// GET /api/calendar/public/upcoming - Get upcoming public events
+router.get("/public/upcoming", [query("limit").optional().isInt({ min: 1, max: 20 }), handleValidationErrors], async (req, res) => {
+  try {
+    const { limit = 5 } = req.query;
+
+    const [events] = await pool.execute(
+      `
+      SELECT 
+        id, title, description, event_type, start_date, end_date,
+        start_time, end_time, is_all_day, location, color,
+        academic_year, semester
+      FROM academic_calendar 
+      WHERE is_public = TRUE 
+        AND status = 'active'
+        AND start_date >= CURDATE()
+      ORDER BY start_date ASC, start_time ASC 
+      LIMIT ?
+    `,
+      [parseInt(limit)]
+    );
 
     res.json({
       success: true,
-      message: "Academic calendar events retrieved successfully",
-      data: events,
-      total: events.length,
+      message: "Upcoming events retrieved successfully",
+      data: {
+        events: events.map((event) => ({
+          id: event.id,
+          title: event.title,
+          description: event.description,
+          type: event.event_type,
+          startDate: event.start_date,
+          endDate: event.end_date,
+          startTime: event.start_time,
+          endTime: event.end_time,
+          isAllDay: event.is_all_day,
+          location: event.location,
+          color: event.color,
+          academicYear: event.academic_year,
+          semester: event.semester,
+        })),
+      },
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    console.error("Get calendar error:", error);
+    console.error("Get upcoming events error:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to retrieve calendar events",
+      message: "Failed to retrieve upcoming events",
       error: error.message,
     });
   }
 });
 
-// GET /api/calendar/:id - Get specific calendar event
-router.get("/:id", async (req, res) => {
+// =============================================================================
+// ADMIN ROUTES (Authentication Required)
+// =============================================================================
+
+// GET /api/calendar - Get all calendar events (Admin)
+router.get(
+  "/",
+  authenticateToken,
+  [
+    query("year").optional().isInt({ min: 2020, max: 2030 }),
+    query("month").optional().isInt({ min: 1, max: 12 }),
+    query("event_type").optional().isIn(["academic", "exam", "holiday", "registration", "orientation", "graduation", "other"]),
+    query("status").optional().isIn(["active", "cancelled", "completed"]),
+    query("academic_year")
+      .optional()
+      .matches(/^20\d{2}\/20\d{2}$/),
+    query("semester").optional().isIn(["ganjil", "genap", "both"]),
+    query("limit").optional().isInt({ min: 1, max: 200 }),
+    query("page").optional().isInt({ min: 1 }),
+    handleValidationErrors,
+  ],
+  async (req, res) => {
+    try {
+      const { year, month, event_type, status, academic_year, semester, limit = 50, page = 1 } = req.query;
+
+      let sql = `
+      SELECT 
+        id, title, description, event_type, start_date, end_date,
+        start_time, end_time, is_all_day, location, color,
+        is_public, academic_year, semester, created_by, status,
+        reminder_days, created_at, updated_at
+      FROM academic_calendar 
+      WHERE 1=1
+    `;
+
+      const params = [];
+
+      // Apply filters
+      if (year) {
+        sql += ` AND YEAR(start_date) = ?`;
+        params.push(year);
+      }
+
+      if (month) {
+        sql += ` AND MONTH(start_date) = ?`;
+        params.push(month);
+      }
+
+      if (event_type) {
+        sql += ` AND event_type = ?`;
+        params.push(event_type);
+      }
+
+      if (status) {
+        sql += ` AND status = ?`;
+        params.push(status);
+      }
+
+      if (academic_year) {
+        sql += ` AND academic_year = ?`;
+        params.push(academic_year);
+      }
+
+      if (semester) {
+        sql += ` AND semester = ?`;
+        params.push(semester);
+      }
+
+      // Count total for pagination
+      const countSql = sql.replace(
+        "SELECT id, title, description, event_type, start_date, end_date, start_time, end_time, is_all_day, location, color, is_public, academic_year, semester, created_by, status, reminder_days, created_at, updated_at",
+        "SELECT COUNT(*) as total"
+      );
+      const [countResult] = await pool.execute(countSql, params);
+      const total = countResult[0].total;
+
+      // Add pagination
+      sql += ` ORDER BY start_date ASC, start_time ASC LIMIT ? OFFSET ?`;
+      params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
+
+      const [events] = await pool.execute(sql, params);
+
+      res.json({
+        success: true,
+        message: "Calendar events retrieved successfully",
+        data: {
+          events,
+          pagination: {
+            page: parseInt(page),
+            limit: parseInt(limit),
+            total,
+            totalPages: Math.ceil(total / parseInt(limit)),
+          },
+          filters: { year, month, event_type, status, academic_year, semester },
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("Get calendar events error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to retrieve calendar events",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// POST /api/calendar - Create new calendar event
+router.post("/", authenticateToken, requirePermission("manage_settings"), validateCalendarEvent, handleValidationErrors, async (req, res) => {
+  try {
+    const { title, description, event_type, start_date, end_date, start_time, end_time, is_all_day = false, location, color = "#007bff", is_public = true, academic_year, semester, reminder_days = 0 } = req.body;
+
+    // Check for conflicting events (same date/time/location)
+    if (location && !is_all_day && start_time) {
+      const [conflicts] = await pool.execute(
+        `
+          SELECT id, title FROM academic_calendar 
+          WHERE location = ? 
+            AND start_date = ? 
+            AND is_all_day = FALSE
+            AND ((start_time <= ? AND end_time > ?) OR 
+                 (start_time < ? AND end_time >= ?))
+            AND status = 'active'
+        `,
+        [location, start_date, start_time, start_time, end_time || start_time, end_time || start_time]
+      );
+
+      if (conflicts.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Schedule conflict detected",
+          conflicting_events: conflicts,
+        });
+      }
+    }
+
+    // Insert new event
+    const [result] = await pool.execute(
+      `
+        INSERT INTO academic_calendar (
+          title, description, event_type, start_date, end_date,
+          start_time, end_time, is_all_day, location, color,
+          is_public, academic_year, semester, created_by,
+          reminder_days, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+      `,
+      [title, description, event_type, start_date, end_date, start_time, end_time, is_all_day, location, color, is_public, academic_year, semester, req.user.id, reminder_days]
+    );
+
+    // Get the created event
+    const [newEvent] = await pool.execute(
+      `
+        SELECT * FROM academic_calendar WHERE id = ?
+      `,
+      [result.insertId]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "Calendar event created successfully",
+      data: {
+        event: newEvent[0],
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Create calendar event error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to create calendar event",
+      error: error.message,
+    });
+  }
+});
+
+// GET /api/calendar/:id - Get single calendar event
+router.get("/:id", authenticateToken, param("id").isInt().withMessage("Valid event ID required"), handleValidationErrors, async (req, res) => {
   try {
     const { id } = req.params;
 
     const [events] = await pool.execute(
-      "SELECT * FROM academic_calendar WHERE id = ?",
+      `
+        SELECT * FROM academic_calendar WHERE id = ?
+      `,
       [id]
     );
 
@@ -100,7 +422,10 @@ router.get("/:id", async (req, res) => {
     res.json({
       success: true,
       message: "Calendar event retrieved successfully",
-      data: events[0],
+      data: {
+        event: events[0],
+      },
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
     console.error("Get calendar event error:", error);
@@ -112,136 +437,17 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// POST /api/calendar - Create new calendar event
-router.post("/", async (req, res) => {
-  try {
-    const {
-      title,
-      description,
-      event_type = "academic",
-      start_date,
-      end_date,
-      start_time,
-      end_time,
-      is_all_day = false,
-      location,
-      color = "#007bff",
-      is_public = true,
-      academic_year,
-      semester = "both",
-      reminder_days = 0,
-    } = req.body;
-
-    // Validation
-    if (!title || !start_date || !academic_year) {
-      return res.status(400).json({
-        success: false,
-        message: "Title, start_date, and academic_year are required",
-      });
-    }
-
-    // Validate date format
-    const startDate = new Date(start_date);
-    if (isNaN(startDate.getTime())) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid start_date format",
-      });
-    }
-
-    // Validate end_date if provided
-    if (end_date) {
-      const endDate = new Date(end_date);
-      if (isNaN(endDate.getTime())) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid end_date format",
-        });
-      }
-      if (endDate < startDate) {
-        return res.status(400).json({
-          success: false,
-          message: "End date cannot be before start date",
-        });
-      }
-    }
-
-    const [result] = await pool.execute(
-      `
-      INSERT INTO academic_calendar (
-        title, description, event_type, start_date, end_date,
-        start_time, end_time, is_all_day, location, color,
-        is_public, academic_year, semester, reminder_days,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-    `,
-      [
-        title,
-        description || null,
-        event_type,
-        start_date,
-        end_date || null,
-        start_time || null,
-        end_time || null,
-        is_all_day,
-        location || null,
-        color,
-        is_public,
-        academic_year,
-        semester,
-        reminder_days,
-      ]
-    );
-
-    res.status(201).json({
-      success: true,
-      message: "Calendar event created successfully",
-      data: {
-        id: result.insertId,
-        title,
-        event_type,
-        start_date,
-        end_date,
-        academic_year,
-        semester,
-        created_at: new Date().toISOString(),
-      },
-    });
-  } catch (error) {
-    console.error("Create calendar event error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to create calendar event",
-      error: error.message,
-    });
-  }
-});
-
 // PUT /api/calendar/:id - Update calendar event
-router.put("/:id", async (req, res) => {
+router.put("/:id", authenticateToken, requirePermission("manage_settings"), param("id").isInt().withMessage("Valid event ID required"), validateCalendarEvent, handleValidationErrors, async (req, res) => {
   try {
     const { id } = req.params;
-    const {
-      title,
-      description,
-      event_type,
-      start_date,
-      end_date,
-      start_time,
-      end_time,
-      is_all_day,
-      location,
-      color,
-      is_public,
-      academic_year,
-      semester,
-      status,
-      reminder_days,
-    } = req.body;
+    const { title, description, event_type, start_date, end_date, start_time, end_time, is_all_day, location, color, is_public, academic_year, semester, reminder_days, status } = req.body;
 
     // Check if event exists
     const [existingEvent] = await pool.execute(
-      "SELECT id FROM academic_calendar WHERE id = ?",
+      `
+        SELECT * FROM academic_calendar WHERE id = ?
+      `,
       [id]
     );
 
@@ -252,94 +458,59 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    // Build dynamic update query
-    const updateFields = [];
-    const updateValues = [];
+    // Check for conflicts (exclude current event)
+    if (location && !is_all_day && start_time) {
+      const [conflicts] = await pool.execute(
+        `
+          SELECT id, title FROM academic_calendar 
+          WHERE location = ? 
+            AND start_date = ? 
+            AND is_all_day = FALSE
+            AND id != ?
+            AND ((start_time <= ? AND end_time > ?) OR 
+                 (start_time < ? AND end_time >= ?))
+            AND status = 'active'
+        `,
+        [location, start_date, id, start_time, start_time, end_time || start_time, end_time || start_time]
+      );
 
-    if (title !== undefined) {
-      updateFields.push("title = ?");
-      updateValues.push(title);
-    }
-    if (description !== undefined) {
-      updateFields.push("description = ?");
-      updateValues.push(description);
-    }
-    if (event_type !== undefined) {
-      updateFields.push("event_type = ?");
-      updateValues.push(event_type);
-    }
-    if (start_date !== undefined) {
-      updateFields.push("start_date = ?");
-      updateValues.push(start_date);
-    }
-    if (end_date !== undefined) {
-      updateFields.push("end_date = ?");
-      updateValues.push(end_date || null);
-    }
-    if (start_time !== undefined) {
-      updateFields.push("start_time = ?");
-      updateValues.push(start_time || null);
-    }
-    if (end_time !== undefined) {
-      updateFields.push("end_time = ?");
-      updateValues.push(end_time || null);
-    }
-    if (is_all_day !== undefined) {
-      updateFields.push("is_all_day = ?");
-      updateValues.push(is_all_day);
-    }
-    if (location !== undefined) {
-      updateFields.push("location = ?");
-      updateValues.push(location);
-    }
-    if (color !== undefined) {
-      updateFields.push("color = ?");
-      updateValues.push(color);
-    }
-    if (is_public !== undefined) {
-      updateFields.push("is_public = ?");
-      updateValues.push(is_public);
-    }
-    if (academic_year !== undefined) {
-      updateFields.push("academic_year = ?");
-      updateValues.push(academic_year);
-    }
-    if (semester !== undefined) {
-      updateFields.push("semester = ?");
-      updateValues.push(semester);
-    }
-    if (status !== undefined) {
-      updateFields.push("status = ?");
-      updateValues.push(status);
-    }
-    if (reminder_days !== undefined) {
-      updateFields.push("reminder_days = ?");
-      updateValues.push(reminder_days);
+      if (conflicts.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Schedule conflict detected",
+          conflicting_events: conflicts,
+        });
+      }
     }
 
-    if (updateFields.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No fields to update",
-      });
-    }
+    // Update event
+    await pool.execute(
+      `
+        UPDATE academic_calendar SET
+          title = ?, description = ?, event_type = ?, start_date = ?, 
+          end_date = ?, start_time = ?, end_time = ?, is_all_day = ?,
+          location = ?, color = ?, is_public = ?, academic_year = ?,
+          semester = ?, reminder_days = ?, status = ?, updated_at = NOW()
+        WHERE id = ?
+      `,
+      [title, description, event_type, start_date, end_date, start_time, end_time, is_all_day, location, color, is_public, academic_year, semester, reminder_days, status || existingEvent[0].status, id]
+    );
 
-    updateFields.push("updated_at = NOW()");
-    updateValues.push(id);
-
-    const [result] = await pool.execute(
-      `UPDATE academic_calendar SET ${updateFields.join(", ")} WHERE id = ?`,
-      updateValues
+    // Get updated event
+    const [updatedEvent] = await pool.execute(
+      `
+        SELECT * FROM academic_calendar WHERE id = ?
+      `,
+      [id]
     );
 
     res.json({
       success: true,
       message: "Calendar event updated successfully",
       data: {
-        id: parseInt(id),
-        updated_fields: updateFields.length - 1,
-        updated_at: new Date().toISOString(),
+        event: updatedEvent[0],
       },
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
     console.error("Update calendar event error:", error);
@@ -352,29 +523,41 @@ router.put("/:id", async (req, res) => {
 });
 
 // DELETE /api/calendar/:id - Delete calendar event
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", authenticateToken, requirePermission("manage_settings"), param("id").isInt().withMessage("Valid event ID required"), handleValidationErrors, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [result] = await pool.execute(
-      "DELETE FROM academic_calendar WHERE id = ?",
+    // Check if event exists
+    const [existingEvent] = await pool.execute(
+      `
+        SELECT * FROM academic_calendar WHERE id = ?
+      `,
       [id]
     );
 
-    if (result.affectedRows === 0) {
+    if (existingEvent.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Calendar event not found",
       });
     }
 
+    // Soft delete by setting status to cancelled
+    await pool.execute(
+      `
+        UPDATE academic_calendar SET status = 'cancelled', updated_at = NOW()
+        WHERE id = ?
+      `,
+      [id]
+    );
+
     res.json({
       success: true,
       message: "Calendar event deleted successfully",
       data: {
-        id: parseInt(id),
-        deleted_at: new Date().toISOString(),
+        deleted_event: existingEvent[0],
       },
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
     console.error("Delete calendar event error:", error);
@@ -386,125 +569,54 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-// GET /api/calendar/public/events - Get public calendar events (no auth required)
-router.get("/public/events", async (req, res) => {
-  try {
-    const {
-      academic_year = new Date().getFullYear(),
-      limit = 50,
-      upcoming = "true",
-    } = req.query;
+// =============================================================================
+// UTILITY ROUTES
+// =============================================================================
 
-    let query = `
-      SELECT 
-        id, title, description, event_type, start_date, end_date,
-        start_time, end_time, is_all_day, location, color,
-        academic_year, semester
+// GET /api/calendar/stats/overview - Calendar statistics
+router.get("/stats/overview", authenticateToken, async (req, res) => {
+  try {
+    // Total events by status
+    const [statusStats] = await pool.execute(`
+      SELECT status, COUNT(*) as count 
       FROM academic_calendar 
-      WHERE is_public = TRUE AND status = 'active'
-    `;
+      GROUP BY status
+    `);
 
-    const queryParams = [];
-
-    if (academic_year) {
-      query += " AND academic_year = ?";
-      queryParams.push(academic_year);
-    }
-
-    if (upcoming === "true") {
-      query += " AND start_date >= CURDATE()";
-    }
-
-    query += " ORDER BY start_date ASC, start_time ASC LIMIT ?";
-    queryParams.push(parseInt(limit));
-
-    const [events] = await pool.execute(query, queryParams);
-
-    res.json({
-      success: true,
-      message: "Public calendar events retrieved successfully",
-      data: events,
-      academic_year: academic_year,
-      total_events: events.length,
-    });
-  } catch (error) {
-    console.error("Get public calendar error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve public calendar events",
-      error: error.message,
-    });
-  }
-});
-
-// GET /api/calendar/stats - Get calendar statistics
-router.get("/admin/stats", async (req, res) => {
-  try {
-    const { academic_year } = req.query;
-
-    // Basic statistics
-    let statsQuery = `
-      SELECT 
-        COUNT(*) as total_events,
-        COUNT(CASE WHEN status = 'active' THEN 1 END) as active_events,
-        COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_events,
-        COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled_events,
-        COUNT(CASE WHEN is_public = TRUE THEN 1 END) as public_events,
-        COUNT(CASE WHEN start_date >= CURDATE() THEN 1 END) as upcoming_events
-      FROM academic_calendar
-    `;
-
-    const queryParams = [];
-    if (academic_year) {
-      statsQuery += " WHERE academic_year = ?";
-      queryParams.push(academic_year);
-    }
-
-    const [stats] = await pool.execute(statsQuery, queryParams);
-
-    // Event type distribution
-    let typeQuery = `
-      SELECT 
-        event_type,
-        COUNT(*) as count,
-        COUNT(CASE WHEN status = 'active' THEN 1 END) as active_count
-      FROM academic_calendar
-    `;
-
-    if (academic_year) {
-      typeQuery += " WHERE academic_year = ?";
-    }
-
-    typeQuery += " GROUP BY event_type ORDER BY count DESC";
-
-    const [typeStats] = await pool.execute(typeQuery, queryParams);
-
-    // Monthly distribution
-    let monthlyQuery = `
-      SELECT 
-        MONTH(start_date) as month,
-        COUNT(*) as event_count
-      FROM academic_calendar
+    // Events by type
+    const [typeStats] = await pool.execute(`
+      SELECT event_type, COUNT(*) as count 
+      FROM academic_calendar 
       WHERE status = 'active'
-    `;
+      GROUP BY event_type
+    `);
 
-    if (academic_year) {
-      monthlyQuery += " AND academic_year = ?";
-    }
+    // Upcoming events count
+    const [upcomingCount] = await pool.execute(`
+      SELECT COUNT(*) as count 
+      FROM academic_calendar 
+      WHERE start_date >= CURDATE() AND status = 'active'
+    `);
 
-    monthlyQuery += " GROUP BY MONTH(start_date) ORDER BY month";
-
-    const [monthlyStats] = await pool.execute(monthlyQuery, queryParams);
+    // This month events
+    const [thisMonthCount] = await pool.execute(`
+      SELECT COUNT(*) as count 
+      FROM academic_calendar 
+      WHERE YEAR(start_date) = YEAR(CURDATE()) 
+        AND MONTH(start_date) = MONTH(CURDATE())
+        AND status = 'active'
+    `);
 
     res.json({
       success: true,
       message: "Calendar statistics retrieved successfully",
       data: {
-        overview: stats[0],
+        by_status: statusStats,
         by_type: typeStats,
-        by_month: monthlyStats,
-        academic_year: academic_year || "all",
+        upcoming_events: upcomingCount[0].count,
+        this_month_events: thisMonthCount[0].count,
       },
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
     console.error("Get calendar stats error:", error);
@@ -516,166 +628,84 @@ router.get("/admin/stats", async (req, res) => {
   }
 });
 
-// POST /api/calendar/bulk - Create multiple calendar events
-router.post("/bulk", async (req, res) => {
-  try {
-    const { events } = req.body;
+// GET /api/calendar/export - Export calendar (JSON/iCal format)
+router.get(
+  "/export",
+  authenticateToken,
+  [query("format").optional().isIn(["json", "ical"]).withMessage("Format must be json or ical"), query("year").optional().isInt({ min: 2020, max: 2030 }), query("public_only").optional().isBoolean(), handleValidationErrors],
+  async (req, res) => {
+    try {
+      const { format = "json", year, public_only = false } = req.query;
 
-    if (!Array.isArray(events) || events.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Events array is required and cannot be empty",
-      });
-    }
+      let sql = `
+      SELECT * FROM academic_calendar 
+      WHERE status = 'active'
+    `;
+      const params = [];
 
-    const results = [];
-    const errors = [];
+      if (public_only === "true") {
+        sql += ` AND is_public = TRUE`;
+      }
 
-    for (let i = 0; i < events.length; i++) {
-      const event = events[i];
+      if (year) {
+        sql += ` AND YEAR(start_date) = ?`;
+        params.push(year);
+      }
 
-      try {
-        // Validate required fields
-        if (!event.title || !event.start_date || !event.academic_year) {
-          errors.push({
-            index: i,
-            event: event.title || "Unnamed Event",
-            error: "Missing required fields: title, start_date, academic_year",
-          });
-          continue;
-        }
+      sql += ` ORDER BY start_date ASC`;
 
-        const [result] = await pool.execute(
-          `
-          INSERT INTO academic_calendar (
-            title, description, event_type, start_date, end_date,
-            start_time, end_time, is_all_day, location, color,
-            is_public, academic_year, semester, reminder_days,
-            created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-        `,
-          [
-            event.title,
-            event.description || null,
-            event.event_type || "academic",
-            event.start_date,
-            event.end_date || null,
-            event.start_time || null,
-            event.end_time || null,
-            event.is_all_day || false,
-            event.location || null,
-            event.color || "#007bff",
-            event.is_public !== undefined ? event.is_public : true,
-            event.academic_year,
-            event.semester || "both",
-            event.reminder_days || 0,
-          ]
-        );
+      const [events] = await pool.execute(sql, params);
 
-        results.push({
-          index: i,
-          id: result.insertId,
-          title: event.title,
-          status: "created",
+      if (format === "ical") {
+        // Generate iCal format
+        let icalContent = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//School Calendar//NONSGML v1.0//EN", "CALSCALE:GREGORIAN"];
+
+        events.forEach((event) => {
+          const startDateTime = `${event.start_date.toISOString().slice(0, 10).replace(/-/g, "")}T${(event.start_time || "00:00:00").replace(/:/g, "")}00Z`;
+          const endDateTime = event.end_date ? `${event.end_date.toISOString().slice(0, 10).replace(/-/g, "")}T${(event.end_time || "23:59:59").replace(/:/g, "")}00Z` : startDateTime;
+
+          icalContent.push(
+            "BEGIN:VEVENT",
+            `UID:${event.id}@school-calendar`,
+            `DTSTART:${startDateTime}`,
+            `DTEND:${endDateTime}`,
+            `SUMMARY:${event.title}`,
+            `DESCRIPTION:${event.description || ""}`,
+            `LOCATION:${event.location || ""}`,
+            `CATEGORIES:${event.event_type}`,
+            "END:VEVENT"
+          );
         });
-      } catch (error) {
-        errors.push({
-          index: i,
-          event: event.title || "Unnamed Event",
-          error: error.message,
+
+        icalContent.push("END:VCALENDAR");
+
+        res.setHeader("Content-Type", "text/calendar");
+        res.setHeader("Content-Disposition", `attachment; filename="calendar-${year || "all"}.ics"`);
+        res.send(icalContent.join("\r\n"));
+      } else {
+        // JSON format
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Content-Disposition", `attachment; filename="calendar-${year || "all"}.json"`);
+        res.json({
+          success: true,
+          export_info: {
+            format: "json",
+            total_events: events.length,
+            export_date: new Date().toISOString(),
+            filters: { year, public_only },
+          },
+          data: events,
         });
       }
-    }
-
-    res.json({
-      success: true,
-      message: `Bulk creation completed. ${results.length} events created, ${errors.length} errors`,
-      data: {
-        created: results,
-        errors: errors,
-        summary: {
-          total_events: events.length,
-          created_count: results.length,
-          error_count: errors.length,
-        },
-      },
-    });
-  } catch (error) {
-    console.error("Bulk create calendar events error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to create calendar events in bulk",
-      error: error.message,
-    });
-  }
-});
-
-// GET /api/calendar/export - Export calendar events as JSON
-router.get("/export", async (req, res) => {
-  try {
-    const { academic_year, format = "json" } = req.query;
-
-    let query = 'SELECT * FROM academic_calendar WHERE status = "active"';
-    const queryParams = [];
-
-    if (academic_year) {
-      query += " AND academic_year = ?";
-      queryParams.push(academic_year);
-    }
-
-    query += " ORDER BY start_date ASC";
-
-    const [events] = await pool.execute(query, queryParams);
-
-    if (format === "ical") {
-      // Simple iCal format export
-      let icalContent = `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//SPMB System//Academic Calendar//EN
-CALSCALE:GREGORIAN\n`;
-
-      events.forEach((event) => {
-        icalContent += `BEGIN:VEVENT
-UID:${event.id}@spmb-system
-DTSTART:${event.start_date.toISOString().replace(/[-:]/g, "").split("T")[0]}
-SUMMARY:${event.title}
-DESCRIPTION:${event.description || ""}
-LOCATION:${event.location || ""}
-STATUS:CONFIRMED
-END:VEVENT\n`;
-      });
-
-      icalContent += "END:VCALENDAR";
-
-      res.setHeader("Content-Type", "text/calendar");
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="academic_calendar_${academic_year || "all"}.ics"`
-      );
-      res.send(icalContent);
-    } else {
-      // JSON export (default)
-      const exportData = {
-        export_date: new Date().toISOString(),
-        academic_year: academic_year || "all",
-        total_events: events.length,
-        events: events,
-      };
-
-      res.json({
-        success: true,
-        message: "Calendar events exported successfully",
-        data: exportData,
+    } catch (error) {
+      console.error("Export calendar error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to export calendar",
+        error: error.message,
       });
     }
-  } catch (error) {
-    console.error("Export calendar error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to export calendar events",
-      error: error.message,
-    });
   }
-});
+);
 
 module.exports = router;
