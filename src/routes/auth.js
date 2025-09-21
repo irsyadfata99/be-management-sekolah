@@ -1,3 +1,7 @@
+// ============================================================================
+// 1. FIXED: src/routes/auth.js (Backend Route)
+// ============================================================================
+
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -21,13 +25,14 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // FIXED: Check database column names
+    // Get user from database
     const [users] = await pool.execute(
       "SELECT * FROM admin_users WHERE (username = ? OR email = ?) AND is_active = 1",
       [username, username]
     );
 
     if (users.length === 0) {
+      console.log("User not found:", username);
       return res.status(401).json({
         success: false,
         message: "Invalid credentials",
@@ -35,30 +40,29 @@ router.post("/login", async (req, res) => {
     }
 
     const user = users[0];
+    console.log("User found:", user.username, "Role:", user.role);
 
-    // FIXED: Check correct password column name
-    // If your column is 'password', use user.password
-    // If your column is 'password_hash', use user.password_hash
+    // Check password
     const passwordToCheck = user.password_hash || user.password;
-
-    // Verify password
     const isValidPassword = await bcrypt.compare(password, passwordToCheck);
 
     if (!isValidPassword) {
+      console.log("Invalid password for:", username);
       return res.status(401).json({
         success: false,
         message: "Invalid credentials",
       });
     }
 
-    // FIXED: Generate JWT token with correct payload structure
+    // FIXED: Generate JWT token with CONSISTENT payload structure
     const token = jwt.sign(
       {
-        userId: user.id, // <- IMPORTANT: Use 'userId' not 'id'
+        id: user.id, // Use 'id' not 'userId' for consistency
         username: user.username,
+        role: user.role || "admin",
         email: user.email || "",
       },
-      process.env.JWT_SECRET,
+      process.env.JWT_SECRET || "school_template_secret",
       { expiresIn: process.env.JWT_EXPIRES_IN || "24h" }
     );
 
@@ -68,6 +72,9 @@ router.post("/login", async (req, res) => {
       [user.id]
     );
 
+    console.log("Login successful for:", user.username);
+
+    // FIXED: Include role in response
     res.json({
       success: true,
       message: "Login successful",
@@ -78,8 +85,8 @@ router.post("/login", async (req, res) => {
           username: user.username,
           email: user.email || "",
           full_name: user.full_name || user.username,
+          role: user.role || "admin", // IMPORTANT: Include role
         },
-        expiresIn: process.env.JWT_EXPIRES_IN || "24h",
       },
       timestamp: new Date().toISOString(),
     });
@@ -101,7 +108,13 @@ router.get("/profile", authenticateToken, async (req, res) => {
       success: true,
       message: "Profile retrieved successfully",
       data: {
-        user: req.user,
+        user: {
+          id: req.user.id,
+          username: req.user.username,
+          email: req.user.email || "",
+          full_name: req.user.full_name || "",
+          role: req.user.role || "admin",
+        },
       },
       timestamp: new Date().toISOString(),
     });

@@ -1,5 +1,6 @@
 const mysql = require("mysql2/promise");
 
+// CLEAN configuration - no deprecated options
 const dbConfig = {
   host: process.env.DB_HOST || "localhost",
   port: process.env.DB_PORT || 3306,
@@ -9,31 +10,25 @@ const dbConfig = {
   charset: "utf8mb4",
   timezone: "+00:00",
 
-  // FIXED: Use only valid MySQL2 options
-  connectionLimit: 10,
-  queueLimit: 0,
+  // Only valid MySQL2 options
+  connectionLimit: 25,
+  queueLimit: 50,
   multipleStatements: false,
-
-  // Remove deprecated options that cause warnings
-  // acquireTimeout: 60000,  // REMOVE
-  // timeout: 60000,         // REMOVE
 };
 
-// Create connection pool
 const pool = mysql.createPool(dbConfig);
 
-// Test connection function
 const testConnection = async () => {
   try {
     const connection = await pool.getConnection();
-    console.log("✅ Database connected successfully");
+    console.log("Database connected successfully");
     console.log(
-      `📊 Connected to: ${dbConfig.database}@${dbConfig.host}:${dbConfig.port}`
+      `Connected to: ${dbConfig.database}@${dbConfig.host}:${dbConfig.port}`
     );
     connection.release();
     return true;
   } catch (error) {
-    console.error("❌ Database connection failed:", error.message);
+    console.error("Database connection failed:", error.message);
     return false;
   }
 };
