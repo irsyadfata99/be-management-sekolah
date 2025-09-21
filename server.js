@@ -30,7 +30,15 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Create upload directories if they don't exist
-const uploadDirs = ["uploads/spmb", "uploads/logos", "uploads/articles", "uploads/school", "uploads/temp", "uploads/personnel"];
+const uploadDirs = [
+  "uploads/spmb",
+  "uploads/logos",
+  "uploads/articles",
+  "uploads/school",
+  "uploads/temp",
+  "uploads/personnel",
+  "uploads/public-docs",
+];
 
 uploadDirs.forEach((dir) => {
   if (!fs.existsSync(dir)) {
@@ -86,9 +94,20 @@ app.get("/api/health/database", async (req, res) => {
       const [tables] = await pool.execute("SHOW TABLES");
       const tableNames = tables.map((row) => Object.values(row)[0]);
 
-      const requiredTables = ["admin_users", "jurusan", "payment_options", "pendaftar_spmb", "artikel", "kategori_artikel", "school_settings", "academic_calendar"];
+      const requiredTables = [
+        "admin_users",
+        "jurusan",
+        "payment_options",
+        "pendaftar_spmb",
+        "artikel",
+        "kategori_artikel",
+        "school_settings",
+        "academic_calendar",
+      ];
 
-      const missingTables = requiredTables.filter((table) => !tableNames.includes(table));
+      const missingTables = requiredTables.filter(
+        (table) => !tableNames.includes(table)
+      );
 
       res.json({
         success: true,
@@ -134,7 +153,9 @@ app.get("/api/health/system", (req, res) => {
       memory: {
         used: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)} MB`,
         total: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)} MB`,
-        percentage: `${Math.round((memoryUsage.heapUsed / memoryUsage.heapTotal) * 100)}%`,
+        percentage: `${Math.round(
+          (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100
+        )}%`,
       },
       nodejs_version: process.version,
       platform: process.platform,
@@ -161,8 +182,10 @@ app.use("/api/optimization", require("./src/routes/optimization"));
 
 // PUBLIC ROUTES (no authentication required)
 app.use("/api/public/articles", require("./src/routes/public/articles"));
+app.use("/api/public/documents", require("./src/routes/public/documents"));
 
 // Admin sub-routes
+app.use("/api/admin/documents", require("./src/routes/admin/documents"));
 app.use("/api/admin/articles", require("./src/routes/admin/articles"));
 app.use("/api/admin/categories", require("./src/routes/admin/categories"));
 app.use("/api/admin/personnel", require("./src/routes/admin/personnel"));
@@ -297,7 +320,14 @@ app.get("/api/docs", async (req, res) => {
       },
 
       file_uploads: {
-        "SPMB Documents": ["bukti_pembayaran (PDF, required)", "akta_kelahiran (PDF, required)", "kartu_keluarga (PDF, required)", "pas_foto (JPG/PNG, required)", "ijazah (PDF, optional)", "surat_keterangan_lulus (PDF, optional)"],
+        "SPMB Documents": [
+          "bukti_pembayaran (PDF, required)",
+          "akta_kelahiran (PDF, required)",
+          "kartu_keluarga (PDF, required)",
+          "pas_foto (JPG/PNG, required)",
+          "ijazah (PDF, optional)",
+          "surat_keterangan_lulus (PDF, optional)",
+        ],
         "Content Images": ["article images (JPG/PNG, 2MB max)"],
         "School Assets": ["school logo (JPG/PNG, 1MB max)"],
         "Upload Limits": "5MB per SPMB file, 2MB per image",
@@ -359,8 +389,12 @@ app.get("/api/setup/status", async (req, res) => {
     const { pool } = require("./src/config/database");
 
     try {
-      const [schoolSettings] = await pool.execute("SELECT COUNT(*) as count FROM school_settings");
-      const [adminUsers] = await pool.execute("SELECT COUNT(*) as count FROM admin_users");
+      const [schoolSettings] = await pool.execute(
+        "SELECT COUNT(*) as count FROM school_settings"
+      );
+      const [adminUsers] = await pool.execute(
+        "SELECT COUNT(*) as count FROM admin_users"
+      );
 
       if (schoolSettings[0].count === 0) {
         return res.json({
@@ -481,7 +515,10 @@ app.use((error, req, res, next) => {
   res.status(500).json({
     success: false,
     message: "Internal server error",
-    error: process.env.NODE_ENV === "development" ? error.message : "Something went wrong",
+    error:
+      process.env.NODE_ENV === "development"
+        ? error.message
+        : "Something went wrong",
     timestamp: new Date().toISOString(),
     request_id: req.id || Date.now(),
   });
@@ -549,11 +586,17 @@ const startServer = async () => {
         console.log("✅ Security manager initialized");
       }
     } catch (error) {
-      console.warn("⚠️  Security manager initialization skipped:", error.message);
+      console.warn(
+        "⚠️  Security manager initialization skipped:",
+        error.message
+      );
     }
 
     try {
-      if (databaseOptimization && typeof databaseOptimization.optimize === "function") {
+      if (
+        databaseOptimization &&
+        typeof databaseOptimization.optimize === "function"
+      ) {
         console.log("⚡ Running database optimization...");
         await databaseOptimization.optimize();
         console.log("✅ Database optimization completed");
@@ -570,8 +613,12 @@ const startServer = async () => {
       console.log(`📡 Server URL: http://localhost:${PORT}`);
       console.log(`📚 API Docs: http://localhost:${PORT}/api/docs`);
       console.log(`🔍 Health Check: http://localhost:${PORT}/api/health`);
-      console.log(`🗄️  Database Health: http://localhost:${PORT}/api/health/database`);
-      console.log(`⚙️  Setup Status: http://localhost:${PORT}/api/setup/status`);
+      console.log(
+        `🗄️  Database Health: http://localhost:${PORT}/api/health/database`
+      );
+      console.log(
+        `⚙️  Setup Status: http://localhost:${PORT}/api/setup/status`
+      );
       console.log(`🌐 Environment: ${process.env.NODE_ENV || "development"}`);
       console.log("=====================================");
       console.log("🎯 COMPLETE FEATURES AVAILABLE:");

@@ -9,7 +9,11 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const { pool } = require("../../config/database");
-const { authenticateToken, requireAdmin, requirePermission } = require("../../middleware/auth");
+const {
+  authenticateToken,
+  requireAdmin,
+  requirePermission,
+} = require("../../middleware/auth");
 
 // ============================================================================
 // PHOTO UPLOAD CONFIGURATION
@@ -49,7 +53,9 @@ const upload = multer({
     });
 
     const allowedTypes = /jpeg|jpg|png|webp/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const extname = allowedTypes.test(
+      path.extname(file.originalname).toLowerCase()
+    );
     const mimetype = allowedTypes.test(file.mimetype);
 
     if (mimetype && extname) {
@@ -76,90 +82,116 @@ const personnelPermission = requirePermission("manage_personnel");
 // CREATE - Add New Personnel (Teacher/Staff)
 // ============================================================================
 
-router.post("/", personnelPermission, upload.single("photo"), async (req, res) => {
-  const connection = await pool.getConnection();
+router.post(
+  "/",
+  personnelPermission,
+  upload.single("photo"),
+  async (req, res) => {
+    const connection = await pool.getConnection();
 
-  try {
-    console.log("=== CREATE PERSONNEL REQUEST ===");
-    console.log("Request body:", req.body);
-    console.log("Uploaded file:", req.file);
+    try {
+      console.log("=== CREATE PERSONNEL REQUEST ===");
+      console.log("Request body:", req.body);
+      console.log("Uploaded file:", req.file);
 
-    await connection.beginTransaction();
+      await connection.beginTransaction();
 
-    const {
-      full_name,
-      position_category, // 'leadership', 'teacher', 'staff', 'support'
-      position_title,
-      department,
-      subject_taught,
-      teaching_since_year,
-      hierarchy_level = 5,
-      reports_to,
-      display_order = 1,
-      email,
-      phone,
-      education_background,
-      certifications,
-      bio,
-      is_active = true,
-    } = req.body;
+      const {
+        full_name,
+        position_category, // 'leadership', 'teacher', 'staff', 'support'
+        position_title,
+        department,
+        subject_taught,
+        teaching_since_year,
+        hierarchy_level = 5,
+        reports_to,
+        display_order = 1,
+        email,
+        phone,
+        education_background,
+        certifications,
+        bio,
+        is_active = true,
+      } = req.body;
 
-    // Enhanced validation
-    const validationErrors = [];
+      // Enhanced validation
+      const validationErrors = [];
 
-    if (!full_name || full_name.trim().length < 2) {
-      validationErrors.push("Nama lengkap minimal 2 karakter");
-    }
+      if (!full_name || full_name.trim().length < 2) {
+        validationErrors.push("Nama lengkap minimal 2 karakter");
+      }
 
-    if (!position_category || !["leadership", "teacher", "staff", "support"].includes(position_category)) {
-      validationErrors.push("Kategori posisi harus dipilih (leadership, teacher, staff, support)");
-    }
+      if (
+        !position_category ||
+        !["leadership", "teacher", "staff", "support"].includes(
+          position_category
+        )
+      ) {
+        validationErrors.push(
+          "Kategori posisi harus dipilih (leadership, teacher, staff, support)"
+        );
+      }
 
-    if (!position_title || position_title.trim().length < 2) {
-      validationErrors.push("Jabatan harus diisi minimal 2 karakter");
-    }
+      if (!position_title || position_title.trim().length < 2) {
+        validationErrors.push("Jabatan harus diisi minimal 2 karakter");
+      }
 
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      validationErrors.push("Format email tidak valid");
-    }
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        validationErrors.push("Format email tidak valid");
+      }
 
-    if (phone && !/^[\d\s\-\+\(\)]{8,20}$/.test(phone)) {
-      validationErrors.push("Format nomor telepon tidak valid");
-    }
+      if (phone && !/^[\d\s\-\+\(\)]{8,20}$/.test(phone)) {
+        validationErrors.push("Format nomor telepon tidak valid");
+      }
 
-    if (teaching_since_year && (parseInt(teaching_since_year) < 1980 || parseInt(teaching_since_year) > new Date().getFullYear())) {
-      validationErrors.push("Tahun mulai mengajar tidak valid");
-    }
+      if (
+        teaching_since_year &&
+        (parseInt(teaching_since_year) < 1980 ||
+          parseInt(teaching_since_year) > new Date().getFullYear())
+      ) {
+        validationErrors.push("Tahun mulai mengajar tidak valid");
+      }
 
-    if (validationErrors.length > 0) {
-      // Delete uploaded file if validation fails
-      if (req.file) {
-        const filePath = path.join(__dirname, "../../../uploads/personnel", req.file.filename);
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-          console.log("🗑️ Deleted uploaded file due to validation errors");
+      if (validationErrors.length > 0) {
+        // Delete uploaded file if validation fails
+        if (req.file) {
+          const filePath = path.join(
+            __dirname,
+            "../../../uploads/personnel",
+            req.file.filename
+          );
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log("🗑️ Deleted uploaded file due to validation errors");
+          }
+        }
+
+        return res.status(400).json({
+          success: false,
+          message: "Validasi gagal",
+          errors: validationErrors,
+        });
+      }
+
+      // Handle photo upload
+      const photo_path = req.file
+        ? `/uploads/personnel/${req.file.filename}`
+        : null;
+
+      // Check if reports_to exists (if provided)
+      if (reports_to) {
+        const [supervisorCheck] = await connection.execute(
+          "SELECT id FROM school_personnel WHERE id = ? AND is_active = TRUE",
+          [reports_to]
+        );
+        if (supervisorCheck.length === 0) {
+          throw new Error(
+            "Atasan yang dipilih tidak ditemukan atau tidak aktif"
+          );
         }
       }
 
-      return res.status(400).json({
-        success: false,
-        message: "Validasi gagal",
-        errors: validationErrors,
-      });
-    }
-
-    // Handle photo upload
-    const photo_path = req.file ? `/uploads/personnel/${req.file.filename}` : null;
-
-    // Check if reports_to exists (if provided)
-    if (reports_to) {
-      const [supervisorCheck] = await connection.execute("SELECT id FROM school_personnel WHERE id = ? AND is_active = TRUE", [reports_to]);
-      if (supervisorCheck.length === 0) {
-        throw new Error("Atasan yang dipilih tidak ditemukan atau tidak aktif");
-      }
-    }
-
-    const insertQuery = `
+      const insertQuery = `
       INSERT INTO school_personnel (
         full_name, photo_path, position_category, position_title, department,
         subject_taught, teaching_since_year, hierarchy_level, reports_to,
@@ -167,64 +199,69 @@ router.post("/", personnelPermission, upload.single("photo"), async (req, res) =
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    const [result] = await connection.execute(insertQuery, [
-      full_name.trim(),
-      photo_path,
-      position_category,
-      position_title.trim(),
-      department?.trim() || null,
-      subject_taught?.trim() || null,
-      teaching_since_year ? parseInt(teaching_since_year) : null,
-      parseInt(hierarchy_level),
-      reports_to ? parseInt(reports_to) : null,
-      parseInt(display_order),
-      email?.trim() || null,
-      phone?.trim() || null,
-      education_background?.trim() || null,
-      certifications?.trim() || null,
-      bio?.trim() || null,
-      is_active,
-    ]);
-
-    await connection.commit();
-
-    console.log("✅ Personnel created successfully:", result.insertId);
-
-    res.status(201).json({
-      success: true,
-      message: "Data guru/staff berhasil ditambahkan",
-      data: {
-        id: result.insertId,
-        full_name: full_name.trim(),
-        position_category,
-        position_title: position_title.trim(),
+      const [result] = await connection.execute(insertQuery, [
+        full_name.trim(),
         photo_path,
-        created_by: req.user.username,
-        created_at: new Date().toISOString(),
-      },
-    });
-  } catch (error) {
-    await connection.rollback();
+        position_category,
+        position_title.trim(),
+        department?.trim() || null,
+        subject_taught?.trim() || null,
+        teaching_since_year ? parseInt(teaching_since_year) : null,
+        parseInt(hierarchy_level),
+        reports_to ? parseInt(reports_to) : null,
+        parseInt(display_order),
+        email?.trim() || null,
+        phone?.trim() || null,
+        education_background?.trim() || null,
+        certifications?.trim() || null,
+        bio?.trim() || null,
+        is_active,
+      ]);
 
-    // Delete uploaded file if database insert fails
-    if (req.file) {
-      const filePath = path.join(__dirname, "../../../uploads/personnel", req.file.filename);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log("🗑️ Deleted uploaded file due to database error");
+      await connection.commit();
+
+      console.log("✅ Personnel created successfully:", result.insertId);
+
+      res.status(201).json({
+        success: true,
+        message: "Data guru/staff berhasil ditambahkan",
+        data: {
+          id: result.insertId,
+          full_name: full_name.trim(),
+          position_category,
+          position_title: position_title.trim(),
+          photo_path,
+          created_by: req.user.username,
+          created_at: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      await connection.rollback();
+
+      // Delete uploaded file if database insert fails
+      if (req.file) {
+        const filePath = path.join(
+          __dirname,
+          "../../../uploads/personnel",
+          req.file.filename
+        );
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          console.log("🗑️ Deleted uploaded file due to database error");
+        }
       }
-    }
 
-    console.error("❌ Error creating personnel:", error);
-    res.status(500).json({
-      success: false,
-      message: "Gagal menambahkan data guru/staff",
-      error: error.message,
-    });
-  } finally {
-    connection.release();
+      console.error("❌ Error creating personnel:", error);
+      res.status(500).json({
+        success: false,
+        message: "Gagal menambahkan data guru/staff",
+        error: error.message,
+      });
+    } finally {
+      connection.release();
+    }
   }
-});
+);
 
 // ============================================================================
 // READ - Get All Personnel with Enhanced Filtering & Search
@@ -236,23 +273,63 @@ router.get("/", authenticateToken, async (req, res) => {
     console.log("Query params:", req.query);
 
     const {
-      category, // Filter by position_category
-      department, // Filter by department
-      hierarchy_level, // Filter by hierarchy level
-      group_by, // Group results by: 'category', 'department', 'hierarchy'
-      search, // Search by name or position
+      category,
+      department,
+      hierarchy_level,
+      search,
       active_only = "true",
       page = 1,
       limit = 50,
-      sort_by = "hierarchy_level",
-      sort_order = "asc",
     } = req.query;
 
-    let whereConditions = [];
-    let queryParams = [];
+    // Simple approach: Build WHERE conditions as strings (avoid parameter issues)
+    let whereClause = "";
+    const conditions = [];
 
-    // Base query with optimized joins
-    let baseQuery = `
+    // Active filter
+    if (active_only === "true") {
+      conditions.push("p.is_active = 1");
+    } else if (active_only === "false") {
+      conditions.push("p.is_active = 0");
+    }
+
+    // Category filter
+    if (category && category.trim()) {
+      conditions.push(`p.position_category = '${category.trim()}'`);
+    }
+
+    // Department filter
+    if (department && department.trim()) {
+      conditions.push(`p.department = '${department.trim()}'`);
+    }
+
+    // Hierarchy filter
+    if (hierarchy_level && !isNaN(parseInt(hierarchy_level))) {
+      conditions.push(`p.hierarchy_level = ${parseInt(hierarchy_level)}`);
+    }
+
+    // Search filter
+    if (search && search.trim()) {
+      const searchTerm = search.trim().replace(/'/g, "''"); // Escape quotes
+      conditions.push(`(
+        p.full_name LIKE '%${searchTerm}%' OR 
+        p.position_title LIKE '%${searchTerm}%' OR 
+        p.subject_taught LIKE '%${searchTerm}%' OR
+        p.department LIKE '%${searchTerm}%'
+      )`);
+    }
+
+    if (conditions.length > 0) {
+      whereClause = " WHERE " + conditions.join(" AND ");
+    }
+
+    // Calculate pagination
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 50));
+    const offsetNum = (pageNum - 1) * limitNum;
+
+    // Main query - simple string concatenation (no parameters)
+    const mainQuery = `
       SELECT 
         p.id,
         p.full_name,
@@ -276,100 +353,44 @@ router.get("/", authenticateToken, async (req, res) => {
         superior.position_title as reports_to_title
       FROM school_personnel p
       LEFT JOIN school_personnel superior ON p.reports_to = superior.id
+      ${whereClause}
+      ORDER BY p.hierarchy_level ASC, p.display_order ASC, p.full_name ASC
+      LIMIT ${limitNum} OFFSET ${offsetNum}
     `;
 
-    // Add filters
-    if (active_only === "true") {
-      whereConditions.push("p.is_active = ?");
-      queryParams.push(true);
-    }
-
-    if (category) {
-      whereConditions.push("p.position_category = ?");
-      queryParams.push(category);
-    }
-
-    if (department) {
-      whereConditions.push("p.department = ?");
-      queryParams.push(department);
-    }
-
-    if (hierarchy_level) {
-      whereConditions.push("p.hierarchy_level = ?");
-      queryParams.push(parseInt(hierarchy_level));
-    }
-
-    if (search && search.trim()) {
-      whereConditions.push(`(
-        p.full_name LIKE ? OR 
-        p.position_title LIKE ? OR 
-        p.subject_taught LIKE ? OR
-        p.department LIKE ?
-      )`);
-      const searchTerm = `%${search.trim()}%`;
-      queryParams.push(searchTerm, searchTerm, searchTerm, searchTerm);
-    }
-
-    // Construct WHERE clause
-    if (whereConditions.length > 0) {
-      baseQuery += " WHERE " + whereConditions.join(" AND ");
-    }
-
-    // Add ordering with validation
-    const validSortFields = ["hierarchy_level", "display_order", "full_name", "created_at", "position_category"];
-    const validSortOrders = ["asc", "desc"];
-
-    const safeSortBy = validSortFields.includes(sort_by) ? sort_by : "hierarchy_level";
-    const safeSortOrder = validSortOrders.includes(sort_order.toLowerCase()) ? sort_order.toUpperCase() : "ASC";
-
-    baseQuery += ` ORDER BY p.${safeSortBy} ${safeSortOrder}, p.display_order ASC, p.full_name ASC`;
-
-    // Add pagination
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    baseQuery += ` LIMIT ? OFFSET ?`;
-    queryParams.push(parseInt(limit), offset);
-
-    console.log("Executing query:", baseQuery);
-    console.log("With params:", queryParams);
-
-    const [personnel] = await pool.execute(baseQuery, queryParams);
-
-    // Get total count for pagination
-    let countQuery = `
+    // Count query
+    const countQuery = `
       SELECT COUNT(*) as total
       FROM school_personnel p
+      ${whereClause}
     `;
 
-    if (whereConditions.length > 0) {
-      countQuery += " WHERE " + whereConditions.join(" AND ");
-    }
+    console.log("Executing main query:", mainQuery);
 
-    const countParams = queryParams.slice(0, -2); // Remove limit and offset
-    const [countResult] = await pool.execute(countQuery, countParams);
+    // Execute queries (no parameters, simple string queries)
+    const [personnel] = await pool.execute(mainQuery);
+    const [countResult] = await pool.execute(countQuery);
+
     const totalRecords = countResult[0].total;
+    const totalPages = Math.ceil(totalRecords / limitNum);
 
-    // Group results if requested
-    let result = personnel;
-    if (group_by && ["category", "department", "hierarchy"].includes(group_by)) {
-      result = groupPersonnel(personnel, group_by);
-    }
-
-    // Calculate pagination
-    const totalPages = Math.ceil(totalRecords / parseInt(limit));
-
-    console.log("✅ Personnel retrieved successfully:", personnel.length, "records");
+    console.log(
+      "✅ Personnel retrieved successfully:",
+      personnel.length,
+      "records"
+    );
 
     res.json({
       success: true,
       message: "Data guru/staff berhasil diambil",
-      data: result,
+      data: personnel,
       pagination: {
-        current_page: parseInt(page),
-        per_page: parseInt(limit),
+        current_page: pageNum,
+        per_page: limitNum,
         total_records: totalRecords,
         total_pages: totalPages,
-        has_next: parseInt(page) < totalPages,
-        has_prev: parseInt(page) > 1,
+        has_next: pageNum < totalPages,
+        has_prev: pageNum > 1,
       },
       filters_applied: {
         category: category || "all",
@@ -377,8 +398,6 @@ router.get("/", authenticateToken, async (req, res) => {
         hierarchy_level: hierarchy_level || "all",
         search: search || "",
         active_only,
-        sort_by: safeSortBy,
-        sort_order: safeSortOrder,
       },
       summary: {
         total_personnel: totalRecords,
@@ -388,10 +407,19 @@ router.get("/", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Error fetching personnel:", error);
+
     res.status(500).json({
       success: false,
       message: "Gagal mengambil data guru/staff",
       error: error.message,
+      debug:
+        process.env.NODE_ENV === "development"
+          ? {
+              code: error.code,
+              sqlMessage: error.sqlMessage,
+              stack: error.stack,
+            }
+          : undefined,
     });
   }
 });
@@ -437,17 +465,25 @@ router.get("/:id", authenticateToken, async (req, res) => {
     // Process subordinates
     personnel.subordinates = [];
     if (personnel.subordinates_list) {
-      personnel.subordinates = personnel.subordinates_list.split("; ").map((sub) => {
-        const match = sub.match(/^(.+) \((.+)\)$/);
-        return match ? { name: match[1], position: match[2] } : { name: sub, position: "" };
-      });
+      personnel.subordinates = personnel.subordinates_list
+        .split("; ")
+        .map((sub) => {
+          const match = sub.match(/^(.+) \((.+)\)$/);
+          return match
+            ? { name: match[1], position: match[2] }
+            : { name: sub, position: "" };
+        });
     }
     delete personnel.subordinates_list;
 
     // Add computed fields
-    personnel.years_of_service = personnel.teaching_since_year ? new Date().getFullYear() - personnel.teaching_since_year : null;
+    personnel.years_of_service = personnel.teaching_since_year
+      ? new Date().getFullYear() - personnel.teaching_since_year
+      : null;
 
-    personnel.photo_url = personnel.photo_path ? `${req.protocol}://${req.get("host")}${personnel.photo_path}` : null;
+    personnel.photo_url = personnel.photo_path
+      ? `${req.protocol}://${req.get("host")}${personnel.photo_path}`
+      : null;
 
     console.log("✅ Personnel details retrieved successfully");
 
@@ -470,226 +506,252 @@ router.get("/:id", authenticateToken, async (req, res) => {
 // UPDATE - Edit Personnel Data with Photo Handling
 // ============================================================================
 
-router.put("/:id", personnelPermission, upload.single("photo"), async (req, res) => {
-  const connection = await pool.getConnection();
+router.put(
+  "/:id",
+  personnelPermission,
+  upload.single("photo"),
+  async (req, res) => {
+    const connection = await pool.getConnection();
 
-  try {
-    console.log("=== UPDATE PERSONNEL REQUEST ===");
-    console.log("Personnel ID:", req.params.id);
-    console.log("Request body:", req.body);
-    console.log("New file:", req.file);
+    try {
+      console.log("=== UPDATE PERSONNEL REQUEST ===");
+      console.log("Personnel ID:", req.params.id);
+      console.log("Request body:", req.body);
+      console.log("New file:", req.file);
 
-    await connection.beginTransaction();
+      await connection.beginTransaction();
 
-    const { id } = req.params;
-    const {
-      full_name,
-      position_category,
-      position_title,
-      department,
-      subject_taught,
-      teaching_since_year,
-      hierarchy_level,
-      reports_to,
-      display_order,
-      email,
-      phone,
-      education_background,
-      certifications,
-      bio,
-      is_active,
-      remove_photo = false,
-    } = req.body;
+      const { id } = req.params;
+      const {
+        full_name,
+        position_category,
+        position_title,
+        department,
+        subject_taught,
+        teaching_since_year,
+        hierarchy_level,
+        reports_to,
+        display_order,
+        email,
+        phone,
+        education_background,
+        certifications,
+        bio,
+        is_active,
+        remove_photo = false,
+      } = req.body;
 
-    // Check if personnel exists
-    const [existing] = await connection.execute("SELECT photo_path FROM school_personnel WHERE id = ?", [id]);
+      // Check if personnel exists
+      const [existing] = await connection.execute(
+        "SELECT photo_path FROM school_personnel WHERE id = ?",
+        [id]
+      );
 
-    if (existing.length === 0) {
-      if (req.file) {
-        // Delete uploaded file if personnel not found
-        const filePath = path.join(__dirname, "../../../uploads/personnel", req.file.filename);
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
+      if (existing.length === 0) {
+        if (req.file) {
+          // Delete uploaded file if personnel not found
+          const filePath = path.join(
+            __dirname,
+            "../../../uploads/personnel",
+            req.file.filename
+          );
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+          }
+        }
+
+        return res.status(404).json({
+          success: false,
+          message: "Data guru/staff tidak ditemukan",
+        });
+      }
+
+      const currentPhotoPath = existing[0].photo_path;
+      let photo_path = currentPhotoPath;
+
+      // Handle photo operations
+      if (remove_photo === "true" || remove_photo === true) {
+        // Remove existing photo
+        if (currentPhotoPath) {
+          const oldFilePath = path.join(
+            __dirname,
+            "../../..",
+            currentPhotoPath
+          );
+          if (fs.existsSync(oldFilePath)) {
+            fs.unlinkSync(oldFilePath);
+            console.log("🗑️ Removed existing photo");
+          }
+        }
+        photo_path = null;
+      } else if (req.file) {
+        // Handle new photo upload
+        photo_path = `/uploads/personnel/${req.file.filename}`;
+
+        // Delete old photo if exists
+        if (currentPhotoPath) {
+          const oldFilePath = path.join(
+            __dirname,
+            "../../..",
+            currentPhotoPath
+          );
+          if (fs.existsSync(oldFilePath)) {
+            fs.unlinkSync(oldFilePath);
+            console.log("🗑️ Replaced existing photo");
+          }
         }
       }
 
-      return res.status(404).json({
-        success: false,
-        message: "Data guru/staff tidak ditemukan",
-      });
-    }
+      // Build dynamic update query
+      const updateFields = [];
+      const updateValues = [];
 
-    const currentPhotoPath = existing[0].photo_path;
-    let photo_path = currentPhotoPath;
-
-    // Handle photo operations
-    if (remove_photo === "true" || remove_photo === true) {
-      // Remove existing photo
-      if (currentPhotoPath) {
-        const oldFilePath = path.join(__dirname, "../../..", currentPhotoPath);
-        if (fs.existsSync(oldFilePath)) {
-          fs.unlinkSync(oldFilePath);
-          console.log("🗑️ Removed existing photo");
-        }
+      if (full_name !== undefined) {
+        updateFields.push("full_name = ?");
+        updateValues.push(full_name.trim());
       }
-      photo_path = null;
-    } else if (req.file) {
-      // Handle new photo upload
-      photo_path = `/uploads/personnel/${req.file.filename}`;
 
-      // Delete old photo if exists
-      if (currentPhotoPath) {
-        const oldFilePath = path.join(__dirname, "../../..", currentPhotoPath);
-        if (fs.existsSync(oldFilePath)) {
-          fs.unlinkSync(oldFilePath);
-          console.log("🗑️ Replaced existing photo");
-        }
+      if (photo_path !== currentPhotoPath) {
+        updateFields.push("photo_path = ?");
+        updateValues.push(photo_path);
       }
-    }
 
-    // Build dynamic update query
-    const updateFields = [];
-    const updateValues = [];
+      if (position_category !== undefined) {
+        updateFields.push("position_category = ?");
+        updateValues.push(position_category);
+      }
 
-    if (full_name !== undefined) {
-      updateFields.push("full_name = ?");
-      updateValues.push(full_name.trim());
-    }
+      if (position_title !== undefined) {
+        updateFields.push("position_title = ?");
+        updateValues.push(position_title.trim());
+      }
 
-    if (photo_path !== currentPhotoPath) {
-      updateFields.push("photo_path = ?");
-      updateValues.push(photo_path);
-    }
+      if (department !== undefined) {
+        updateFields.push("department = ?");
+        updateValues.push(department?.trim() || null);
+      }
 
-    if (position_category !== undefined) {
-      updateFields.push("position_category = ?");
-      updateValues.push(position_category);
-    }
+      if (subject_taught !== undefined) {
+        updateFields.push("subject_taught = ?");
+        updateValues.push(subject_taught?.trim() || null);
+      }
 
-    if (position_title !== undefined) {
-      updateFields.push("position_title = ?");
-      updateValues.push(position_title.trim());
-    }
+      if (teaching_since_year !== undefined) {
+        updateFields.push("teaching_since_year = ?");
+        updateValues.push(
+          teaching_since_year ? parseInt(teaching_since_year) : null
+        );
+      }
 
-    if (department !== undefined) {
-      updateFields.push("department = ?");
-      updateValues.push(department?.trim() || null);
-    }
+      if (hierarchy_level !== undefined) {
+        updateFields.push("hierarchy_level = ?");
+        updateValues.push(parseInt(hierarchy_level));
+      }
 
-    if (subject_taught !== undefined) {
-      updateFields.push("subject_taught = ?");
-      updateValues.push(subject_taught?.trim() || null);
-    }
+      if (reports_to !== undefined) {
+        updateFields.push("reports_to = ?");
+        updateValues.push(reports_to ? parseInt(reports_to) : null);
+      }
 
-    if (teaching_since_year !== undefined) {
-      updateFields.push("teaching_since_year = ?");
-      updateValues.push(teaching_since_year ? parseInt(teaching_since_year) : null);
-    }
+      if (display_order !== undefined) {
+        updateFields.push("display_order = ?");
+        updateValues.push(parseInt(display_order));
+      }
 
-    if (hierarchy_level !== undefined) {
-      updateFields.push("hierarchy_level = ?");
-      updateValues.push(parseInt(hierarchy_level));
-    }
+      if (email !== undefined) {
+        updateFields.push("email = ?");
+        updateValues.push(email?.trim() || null);
+      }
 
-    if (reports_to !== undefined) {
-      updateFields.push("reports_to = ?");
-      updateValues.push(reports_to ? parseInt(reports_to) : null);
-    }
+      if (phone !== undefined) {
+        updateFields.push("phone = ?");
+        updateValues.push(phone?.trim() || null);
+      }
 
-    if (display_order !== undefined) {
-      updateFields.push("display_order = ?");
-      updateValues.push(parseInt(display_order));
-    }
+      if (education_background !== undefined) {
+        updateFields.push("education_background = ?");
+        updateValues.push(education_background?.trim() || null);
+      }
 
-    if (email !== undefined) {
-      updateFields.push("email = ?");
-      updateValues.push(email?.trim() || null);
-    }
+      if (certifications !== undefined) {
+        updateFields.push("certifications = ?");
+        updateValues.push(certifications?.trim() || null);
+      }
 
-    if (phone !== undefined) {
-      updateFields.push("phone = ?");
-      updateValues.push(phone?.trim() || null);
-    }
+      if (bio !== undefined) {
+        updateFields.push("bio = ?");
+        updateValues.push(bio?.trim() || null);
+      }
 
-    if (education_background !== undefined) {
-      updateFields.push("education_background = ?");
-      updateValues.push(education_background?.trim() || null);
-    }
+      if (is_active !== undefined) {
+        updateFields.push("is_active = ?");
+        updateValues.push(is_active);
+      }
 
-    if (certifications !== undefined) {
-      updateFields.push("certifications = ?");
-      updateValues.push(certifications?.trim() || null);
-    }
+      // Always update timestamp
+      updateFields.push("updated_at = CURRENT_TIMESTAMP");
 
-    if (bio !== undefined) {
-      updateFields.push("bio = ?");
-      updateValues.push(bio?.trim() || null);
-    }
+      if (updateFields.length === 1) {
+        // Only timestamp update
+        return res.status(400).json({
+          success: false,
+          message: "Tidak ada data yang diubah",
+        });
+      }
 
-    if (is_active !== undefined) {
-      updateFields.push("is_active = ?");
-      updateValues.push(is_active);
-    }
+      updateValues.push(id);
 
-    // Always update timestamp
-    updateFields.push("updated_at = CURRENT_TIMESTAMP");
-
-    if (updateFields.length === 1) {
-      // Only timestamp update
-      return res.status(400).json({
-        success: false,
-        message: "Tidak ada data yang diubah",
-      });
-    }
-
-    updateValues.push(id);
-
-    const updateQuery = `
+      const updateQuery = `
       UPDATE school_personnel SET ${updateFields.join(", ")} WHERE id = ?
     `;
 
-    console.log("Update query:", updateQuery);
-    console.log("Update values:", updateValues);
+      console.log("Update query:", updateQuery);
+      console.log("Update values:", updateValues);
 
-    await connection.execute(updateQuery, updateValues);
-    await connection.commit();
+      await connection.execute(updateQuery, updateValues);
+      await connection.commit();
 
-    console.log("✅ Personnel updated successfully");
+      console.log("✅ Personnel updated successfully");
 
-    res.json({
-      success: true,
-      message: "Data guru/staff berhasil diperbarui",
-      data: {
-        id: parseInt(id),
-        full_name: full_name?.trim() || "not updated",
-        position_title: position_title?.trim() || "not updated",
-        photo_path,
-        updated_by: req.user.username,
-        updated_at: new Date().toISOString(),
-      },
-    });
-  } catch (error) {
-    await connection.rollback();
+      res.json({
+        success: true,
+        message: "Data guru/staff berhasil diperbarui",
+        data: {
+          id: parseInt(id),
+          full_name: full_name?.trim() || "not updated",
+          position_title: position_title?.trim() || "not updated",
+          photo_path,
+          updated_by: req.user.username,
+          updated_at: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      await connection.rollback();
 
-    // Delete new uploaded file if update fails
-    if (req.file) {
-      const filePath = path.join(__dirname, "../../../uploads/personnel", req.file.filename);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log("🗑️ Deleted uploaded file due to update error");
+      // Delete new uploaded file if update fails
+      if (req.file) {
+        const filePath = path.join(
+          __dirname,
+          "../../../uploads/personnel",
+          req.file.filename
+        );
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          console.log("🗑️ Deleted uploaded file due to update error");
+        }
       }
-    }
 
-    console.error("❌ Error updating personnel:", error);
-    res.status(500).json({
-      success: false,
-      message: "Gagal memperbarui data guru/staff",
-      error: error.message,
-    });
-  } finally {
-    connection.release();
+      console.error("❌ Error updating personnel:", error);
+      res.status(500).json({
+        success: false,
+        message: "Gagal memperbarui data guru/staff",
+        error: error.message,
+      });
+    } finally {
+      connection.release();
+    }
   }
-});
+);
 
 // ============================================================================
 // DELETE - Remove Personnel (Soft Delete + Hard Delete Options)
@@ -709,7 +771,10 @@ router.delete("/:id", personnelPermission, async (req, res) => {
     await connection.beginTransaction();
 
     // Check if personnel exists
-    const [existing] = await connection.execute("SELECT full_name, photo_path, is_active FROM school_personnel WHERE id = ?", [id]);
+    const [existing] = await connection.execute(
+      "SELECT full_name, photo_path, is_active FROM school_personnel WHERE id = ?",
+      [id]
+    );
 
     if (existing.length === 0) {
       return res.status(404).json({
@@ -724,13 +789,17 @@ router.delete("/:id", personnelPermission, async (req, res) => {
 
     // Check for dependencies (subordinates)
     if (permanent === "true" && force !== "true") {
-      const [subordinates] = await connection.execute("SELECT COUNT(*) as count FROM school_personnel WHERE reports_to = ? AND is_active = TRUE", [id]);
+      const [subordinates] = await connection.execute(
+        "SELECT COUNT(*) as count FROM school_personnel WHERE reports_to = ? AND is_active = TRUE",
+        [id]
+      );
 
       if (subordinates[0].count > 0) {
         return res.status(400).json({
           success: false,
           message: `Tidak dapat menghapus ${personnelName}. Masih ada ${subordinates[0].count} staff yang melapor ke beliau.`,
-          suggestion: "Pindahkan staff yang melapor terlebih dahulu atau gunakan parameter force=true",
+          suggestion:
+            "Pindahkan staff yang melapor terlebih dahulu atau gunakan parameter force=true",
         });
       }
     }
@@ -740,10 +809,15 @@ router.delete("/:id", personnelPermission, async (req, res) => {
       console.log("Performing permanent delete...");
 
       // Update subordinates to remove reference
-      await connection.execute("UPDATE school_personnel SET reports_to = NULL WHERE reports_to = ?", [id]);
+      await connection.execute(
+        "UPDATE school_personnel SET reports_to = NULL WHERE reports_to = ?",
+        [id]
+      );
 
       // Delete the record
-      await connection.execute("DELETE FROM school_personnel WHERE id = ?", [id]);
+      await connection.execute("DELETE FROM school_personnel WHERE id = ?", [
+        id,
+      ]);
 
       // Delete photo file
       if (photoPath) {
@@ -756,7 +830,10 @@ router.delete("/:id", personnelPermission, async (req, res) => {
     } else {
       // Soft delete
       console.log("Performing soft delete...");
-      await connection.execute("UPDATE school_personnel SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
+      await connection.execute(
+        "UPDATE school_personnel SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [id]
+      );
     }
 
     await connection.commit();
@@ -765,7 +842,9 @@ router.delete("/:id", personnelPermission, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Data guru/staff "${personnelName}" berhasil ${permanent === "true" ? "dihapus permanen" : "dinonaktifkan"}`,
+      message: `Data guru/staff "${personnelName}" berhasil ${
+        permanent === "true" ? "dihapus permanen" : "dinonaktifkan"
+      }`,
       data: {
         id: parseInt(id),
         name: personnelName,
@@ -904,6 +983,7 @@ router.get("/categories/staff", authenticateToken, async (req, res) => {
 // UTILITY FUNCTIONS
 // ============================================================================
 
+// Helper functions (pastikan ada)
 function groupPersonnel(personnel, groupBy) {
   switch (groupBy) {
     case "category":

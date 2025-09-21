@@ -1,4 +1,4 @@
-// src/routes/public/articles.js - FIXED Route Order
+// src/routes/public/articles.js - FIXED Route Order (MySQL2 Parameter Binding Issues Resolved)
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../../config/database");
@@ -11,7 +11,9 @@ const formatArticleForPublic = (article) => {
     slug: article.slug,
     konten_singkat: article.konten_singkat,
     konten_lengkap: article.konten_lengkap,
-    gambar_utama: article.gambar_utama ? `/uploads/articles/${article.gambar_utama}` : null,
+    gambar_utama: article.gambar_utama
+      ? `/uploads/articles/${article.gambar_utama}`
+      : null,
     kategori: {
       id: article.kategori_id,
       nama: article.nama_kategori,
@@ -92,7 +94,10 @@ router.get("/categories/:slug", async (req, res) => {
     const { slug } = req.params;
     const { page = 1, limit = 12, sort = "newest" } = req.query;
 
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    // FIXED: Safe integer conversion
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit) || 12));
+    const offset = (pageNum - 1) * limitNum;
 
     // Get category details
     const categoryQuery = `
@@ -132,7 +137,7 @@ router.get("/categories/:slug", async (req, res) => {
         break;
     }
 
-    // Get articles in this category
+    // FIXED: String interpolation for LIMIT
     const articlesQuery = `
       SELECT 
         a.id, a.judul, a.slug, a.konten_singkat, a.gambar_utama,
@@ -143,13 +148,13 @@ router.get("/categories/:slug", async (req, res) => {
       LEFT JOIN kategori_artikel k ON a.kategori_id = k.id
       WHERE k.slug = ? AND a.is_published = 1
       ORDER BY ${orderBy}
-      LIMIT ? OFFSET ?
+      LIMIT ${limitNum} OFFSET ${offset}
     `;
 
-    const [articles] = await pool.execute(articlesQuery, [slug, parseInt(limit), offset]);
+    const [articles] = await pool.execute(articlesQuery, [slug]);
 
     // Calculate pagination
-    const totalPages = Math.ceil(category.total_artikel / parseInt(limit));
+    const totalPages = Math.ceil(category.total_artikel / limitNum);
 
     res.json({
       success: true,
@@ -158,12 +163,12 @@ router.get("/categories/:slug", async (req, res) => {
         category: formatCategoryForPublic(category),
         articles: articles.map(formatArticleForPublic),
         pagination: {
-          current_page: parseInt(page),
+          current_page: pageNum,
           total_pages: totalPages,
           total_articles: category.total_artikel,
-          per_page: parseInt(limit),
-          has_next: parseInt(page) < totalPages,
-          has_prev: parseInt(page) > 1,
+          per_page: limitNum,
+          has_next: pageNum < totalPages,
+          has_prev: pageNum > 1,
         },
         sort: sort,
       },
@@ -181,7 +186,14 @@ router.get("/categories/:slug", async (req, res) => {
 // GET /api/public/articles/search - Advanced search functionality
 router.get("/search", async (req, res) => {
   try {
-    const { q, page = 1, limit = 12, kategori, year, sort = "relevance" } = req.query;
+    const {
+      q,
+      page = 1,
+      limit = 12,
+      kategori,
+      year,
+      sort = "relevance",
+    } = req.query;
 
     if (!q || q.trim().length < 2) {
       return res.status(400).json({
@@ -190,10 +202,16 @@ router.get("/search", async (req, res) => {
       });
     }
 
+    // FIXED: Safe parameter handling
     const searchTerm = `%${q.trim()}%`;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit) || 12));
+    const offset = (pageNum - 1) * limitNum;
 
-    let whereConditions = ["a.is_published = 1", "(a.judul LIKE ? OR a.konten_lengkap LIKE ? OR a.tags LIKE ?)"];
+    let whereConditions = [
+      "a.is_published = 1",
+      "(a.judul LIKE ? OR a.konten_lengkap LIKE ? OR a.tags LIKE ?)",
+    ];
     let queryParams = [searchTerm, searchTerm, searchTerm];
 
     // Add category filter
@@ -212,6 +230,8 @@ router.get("/search", async (req, res) => {
 
     // Determine sort order
     let orderBy = "a.tanggal_publish DESC";
+    let relevanceParams = [];
+
     switch (sort) {
       case "newest":
         orderBy = "a.tanggal_publish DESC";
@@ -232,7 +252,7 @@ router.get("/search", async (req, res) => {
             ELSE 3 
           END, a.tanggal_publish DESC
         `;
-        queryParams.unshift(searchTerm, searchTerm);
+        relevanceParams = [searchTerm, searchTerm];
         break;
     }
 
@@ -244,15 +264,10 @@ router.get("/search", async (req, res) => {
       WHERE ${whereClause}
     `;
 
-    const countParams =
-      sort === "relevance"
-        ? queryParams.slice(2) // Remove the relevance parameters
-        : [...queryParams];
-
-    const [countResult] = await pool.execute(countQuery, countParams);
+    const [countResult] = await pool.execute(countQuery, queryParams);
     const totalResults = countResult[0].total;
 
-    // Get search results
+    // FIXED: Build search query with string interpolation for LIMIT
     const searchQuery = `
       SELECT 
         a.id, a.judul, a.slug, a.konten_singkat, a.gambar_utama,
@@ -263,28 +278,33 @@ router.get("/search", async (req, res) => {
       LEFT JOIN kategori_artikel k ON a.kategori_id = k.id
       WHERE ${whereClause}
       ORDER BY ${orderBy}
-      LIMIT ? OFFSET ?
+      LIMIT ${limitNum} OFFSET ${offset}
     `;
 
-    queryParams.push(parseInt(limit), offset);
-    const [articles] = await pool.execute(searchQuery, queryParams);
+    const finalParams = [...relevanceParams, ...queryParams];
+    const [articles] = await pool.execute(searchQuery, finalParams);
 
     // Format results with search highlights
     const formattedResults = articles.map((article) => {
       const formatted = formatArticleForPublic(article);
 
       // Add search highlights (simple implementation)
-      const searchRegex = new RegExp(`(${q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+      const searchRegex = new RegExp(
+        `(${q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`,
+        "gi"
+      );
 
       formatted.search_highlights = {
         judul: formatted.judul.replace(searchRegex, "<mark>$1</mark>"),
-        konten_singkat: formatted.konten_singkat ? formatted.konten_singkat.replace(searchRegex, "<mark>$1</mark>") : null,
+        konten_singkat: formatted.konten_singkat
+          ? formatted.konten_singkat.replace(searchRegex, "<mark>$1</mark>")
+          : null,
       };
 
       return formatted;
     });
 
-    const totalPages = Math.ceil(totalResults / parseInt(limit));
+    const totalPages = Math.ceil(totalResults / limitNum);
 
     res.json({
       success: true,
@@ -293,12 +313,12 @@ router.get("/search", async (req, res) => {
         query: q.trim(),
         results: formattedResults,
         pagination: {
-          current_page: parseInt(page),
+          current_page: pageNum,
           total_pages: totalPages,
           total_results: totalResults,
-          per_page: parseInt(limit),
-          has_next: parseInt(page) < totalPages,
-          has_prev: parseInt(page) > 1,
+          per_page: limitNum,
+          has_next: pageNum < totalPages,
+          has_prev: pageNum > 1,
         },
         filters: {
           kategori,
@@ -317,10 +337,13 @@ router.get("/search", async (req, res) => {
   }
 });
 
-// GET /api/public/articles/featured - Get featured articles
+// GET /api/public/articles/featured - Get featured articles (FIXED)
 router.get("/featured", async (req, res) => {
   try {
     const { limit = 6 } = req.query;
+
+    // FIXED: String interpolation for LIMIT
+    const limitNum = Math.min(20, Math.max(1, parseInt(limit) || 6));
 
     const query = `
       SELECT 
@@ -331,10 +354,10 @@ router.get("/featured", async (req, res) => {
       LEFT JOIN kategori_artikel k ON a.kategori_id = k.id
       WHERE a.is_published = 1 AND a.is_featured = 1
       ORDER BY a.tanggal_publish DESC
-      LIMIT ?
+      LIMIT ${limitNum}
     `;
 
-    const [articles] = await pool.execute(query, [parseInt(limit)]);
+    const [articles] = await pool.execute(query);
 
     res.json({
       success: true,
@@ -354,10 +377,13 @@ router.get("/featured", async (req, res) => {
   }
 });
 
-// GET /api/public/articles/recent - Get recent articles (for widgets, etc.)
+// GET /api/public/articles/recent - Get recent articles (FIXED)
 router.get("/recent", async (req, res) => {
   try {
     const { limit = 5, exclude_id } = req.query;
+
+    // FIXED: String interpolation for LIMIT
+    const limitNum = Math.min(20, Math.max(1, parseInt(limit) || 5));
 
     let query = `
       SELECT 
@@ -375,8 +401,7 @@ router.get("/recent", async (req, res) => {
       queryParams.push(parseInt(exclude_id));
     }
 
-    query += " ORDER BY a.tanggal_publish DESC LIMIT ?";
-    queryParams.push(parseInt(limit));
+    query += ` ORDER BY a.tanggal_publish DESC LIMIT ${limitNum}`;
 
     const [articles] = await pool.execute(query, queryParams);
 
@@ -388,7 +413,9 @@ router.get("/recent", async (req, res) => {
           id: article.id,
           judul: article.judul,
           slug: article.slug,
-          gambar_utama: article.gambar_utama ? `/uploads/articles/${article.gambar_utama}` : null,
+          gambar_utama: article.gambar_utama
+            ? `/uploads/articles/${article.gambar_utama}`
+            : null,
           tanggal_publish: article.tanggal_publish,
           kategori: {
             nama: article.nama_kategori,
@@ -468,12 +495,25 @@ router.get("/stats", async (req, res) => {
 // GENERIC ROUTES LAST - MUST BE AFTER SPECIFIC ROUTES!
 // =============================================================================
 
-// GET /api/public/articles - List published articles with pagination and filters
+// GET /api/public/articles - List published articles with pagination and filters (FIXED)
 router.get("/", async (req, res) => {
   try {
-    const { page = 1, limit = 12, kategori, featured = false, search, sort = "newest", year, month } = req.query;
+    const {
+      page = 1,
+      limit = 12,
+      kategori,
+      featured = false,
+      search,
+      sort = "newest",
+      year,
+      month,
+    } = req.query;
 
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    // FIXED: Safe parameter conversion
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit) || 12));
+    const offset = (pageNum - 1) * limitNum;
+
     let whereConditions = ["a.is_published = 1"];
     let queryParams = [];
 
@@ -490,7 +530,9 @@ router.get("/", async (req, res) => {
 
     // Search functionality
     if (search) {
-      whereConditions.push("(a.judul LIKE ? OR a.konten_lengkap LIKE ? OR a.tags LIKE ?)");
+      whereConditions.push(
+        "(a.judul LIKE ? OR a.konten_lengkap LIKE ? OR a.tags LIKE ?)"
+      );
       const searchTerm = `%${search}%`;
       queryParams.push(searchTerm, searchTerm, searchTerm);
     }
@@ -537,7 +579,7 @@ router.get("/", async (req, res) => {
     const [countResult] = await pool.execute(countQuery, queryParams);
     const totalArticles = countResult[0].total;
 
-    // Get articles data
+    // FIXED: String interpolation for LIMIT
     const articlesQuery = `
       SELECT 
         a.id, a.judul, a.slug, a.konten_singkat, a.konten_lengkap,
@@ -548,17 +590,16 @@ router.get("/", async (req, res) => {
       LEFT JOIN kategori_artikel k ON a.kategori_id = k.id
       WHERE ${whereClause}
       ORDER BY ${orderBy}
-      LIMIT ? OFFSET ?
+      LIMIT ${limitNum} OFFSET ${offset}
     `;
 
-    queryParams.push(parseInt(limit), offset);
     const [articles] = await pool.execute(articlesQuery, queryParams);
 
     // Format articles for public consumption
     const formattedArticles = articles.map(formatArticleForPublic);
 
     // Calculate pagination
-    const totalPages = Math.ceil(totalArticles / parseInt(limit));
+    const totalPages = Math.ceil(totalArticles / limitNum);
 
     res.json({
       success: true,
@@ -566,14 +607,14 @@ router.get("/", async (req, res) => {
       data: {
         articles: formattedArticles,
         pagination: {
-          current_page: parseInt(page),
+          current_page: pageNum,
           total_pages: totalPages,
           total_articles: totalArticles,
-          per_page: parseInt(limit),
-          has_next: parseInt(page) < totalPages,
-          has_prev: parseInt(page) > 1,
-          next_page: parseInt(page) < totalPages ? parseInt(page) + 1 : null,
-          prev_page: parseInt(page) > 1 ? parseInt(page) - 1 : null,
+          per_page: limitNum,
+          has_next: pageNum < totalPages,
+          has_prev: pageNum > 1,
+          next_page: pageNum < totalPages ? pageNum + 1 : null,
+          prev_page: pageNum > 1 ? pageNum - 1 : null,
         },
         filters: {
           kategori,
@@ -595,7 +636,7 @@ router.get("/", async (req, res) => {
   }
 });
 
-// GET /api/public/articles/:slug - Get single article by slug
+// GET /api/public/articles/:slug - Get single article by slug (FIXED)
 // THIS MUST BE THE LAST ROUTE because it's the most generic (catches anything)
 router.get("/:slug", async (req, res) => {
   try {
@@ -627,11 +668,14 @@ router.get("/:slug", async (req, res) => {
 
     // Increment view count if requested
     if (increment_views === "true") {
-      await pool.execute("UPDATE artikel SET views = COALESCE(views, 0) + 1 WHERE id = ?", [article.id]);
+      await pool.execute(
+        "UPDATE artikel SET views = COALESCE(views, 0) + 1 WHERE id = ?",
+        [article.id]
+      );
       article.views = (article.views || 0) + 1;
     }
 
-    // Get related articles (same category, different article)
+    // FIXED: String interpolation for LIMIT in related articles
     const relatedQuery = `
       SELECT 
         a.id, a.judul, a.slug, a.konten_singkat, a.gambar_utama,
@@ -644,9 +688,12 @@ router.get("/:slug", async (req, res) => {
       LIMIT 4
     `;
 
-    const [relatedArticles] = await pool.execute(relatedQuery, [article.kategori_id, article.id]);
+    const [relatedArticles] = await pool.execute(relatedQuery, [
+      article.kategori_id,
+      article.id,
+    ]);
 
-    // Get previous and next articles
+    // FIXED: String interpolation for LIMIT in prev/next
     const prevQuery = `
       SELECT id, judul, slug, gambar_utama
       FROM artikel 
@@ -663,8 +710,12 @@ router.get("/:slug", async (req, res) => {
       LIMIT 1
     `;
 
-    const [prevArticle] = await pool.execute(prevQuery, [article.tanggal_publish]);
-    const [nextArticle] = await pool.execute(nextQuery, [article.tanggal_publish]);
+    const [prevArticle] = await pool.execute(prevQuery, [
+      article.tanggal_publish,
+    ]);
+    const [nextArticle] = await pool.execute(nextQuery, [
+      article.tanggal_publish,
+    ]);
 
     res.json({
       success: true,
@@ -679,7 +730,9 @@ router.get("/:slug", async (req, res) => {
                   id: prevArticle[0].id,
                   judul: prevArticle[0].judul,
                   slug: prevArticle[0].slug,
-                  gambar_utama: prevArticle[0].gambar_utama ? `/uploads/articles/${prevArticle[0].gambar_utama}` : null,
+                  gambar_utama: prevArticle[0].gambar_utama
+                    ? `/uploads/articles/${prevArticle[0].gambar_utama}`
+                    : null,
                 }
               : null,
           next:
@@ -688,15 +741,21 @@ router.get("/:slug", async (req, res) => {
                   id: nextArticle[0].id,
                   judul: nextArticle[0].judul,
                   slug: nextArticle[0].slug,
-                  gambar_utama: nextArticle[0].gambar_utama ? `/uploads/articles/${nextArticle[0].gambar_utama}` : null,
+                  gambar_utama: nextArticle[0].gambar_utama
+                    ? `/uploads/articles/${nextArticle[0].gambar_utama}`
+                    : null,
                 }
               : null,
         },
         seo: {
           title: article.judul,
-          description: article.meta_description || article.konten_singkat?.substring(0, 160),
+          description:
+            article.meta_description ||
+            article.konten_singkat?.substring(0, 160),
           keywords: article.tags,
-          og_image: article.gambar_utama ? `/uploads/articles/${article.gambar_utama}` : null,
+          og_image: article.gambar_utama
+            ? `/uploads/articles/${article.gambar_utama}`
+            : null,
           canonical_url: `/artikel/${article.slug}`,
           published_time: article.tanggal_publish,
           modified_time: article.updated_at,

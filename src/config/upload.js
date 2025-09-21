@@ -8,6 +8,7 @@ const uploadDirs = [
   "uploads/articles",
   "uploads/school",
   "uploads/temp",
+  "uploads/personnel", // ADDED for personnel photos
 ];
 
 uploadDirs.forEach((dir) => {
@@ -72,6 +73,19 @@ const school_storage = multer.diskStorage({
   },
 });
 
+// ADDED: Storage for personnel photos (3x4 professional photos)
+const personnel_storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/personnel");
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    const ext = path.extname(file.originalname);
+    const filename = `personnel-${uniqueSuffix}${ext}`;
+    cb(null, filename);
+  },
+});
+
 // SPMB file upload (5 documents)
 const uploadSPMB = multer({
   storage: spmb_storage,
@@ -106,6 +120,15 @@ const uploadSchoolLogo = multer({
   },
 }).single("logo");
 
+// ADDED: Personnel photo upload (3x4 professional photos)
+const uploadPersonnelPhoto = multer({
+  storage: personnel_storage,
+  fileFilter: imageFilter,
+  limits: {
+    fileSize: 3 * 1024 * 1024, // 3MB for high quality photos
+  },
+}).single("photo");
+
 // File validation helper
 const validateFiles = (files, requiredFiles = []) => {
   const errors = [];
@@ -136,6 +159,7 @@ module.exports = {
   uploadSPMB,
   uploadArticleImage,
   uploadSchoolLogo,
+  uploadPersonnelPhoto, // ADDED export
   validateFiles,
   deleteFile,
 };

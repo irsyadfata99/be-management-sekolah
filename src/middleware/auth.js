@@ -1,7 +1,14 @@
+// ============================================================================
+// FINAL WORKING AUTH MIDDLEWARE - Clean & Complete
+// File: src/middleware/auth.js
+// ============================================================================
+
 const jwt = require("jsonwebtoken");
 const { pool } = require("../config/database");
 
+// ============================================================================
 // Main authentication middleware
+// ============================================================================
 const authenticateToken = async (req, res, next) => {
   try {
     console.log("=== AUTH MIDDLEWARE DEBUG ===");
@@ -32,16 +39,24 @@ const authenticateToken = async (req, res, next) => {
     console.log("Token (first 20 chars):", token.substring(0, 20) + "...");
 
     // Verify JWT
-    console.log("JWT Secret (first 10 chars):", process.env.JWT_SECRET?.substring(0, 10) + "...");
+    console.log("JWT Secret exists:", !!process.env.JWT_SECRET);
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET || "school_template_secret"
+    );
     console.log("✅ Token decoded successfully:", decoded);
 
     // Get user from database - handle both 'id' and 'userId' in token
     const userId = decoded.userId || decoded.id;
     console.log("Looking for user ID:", userId);
 
-    const [users] = await pool.execute("SELECT id, username, email, full_name, role, is_active, can_manage_students, can_manage_settings, can_export_data, can_manage_admins FROM admin_users WHERE id = ? AND is_active = 1", [userId]);
+    const [users] = await pool.execute(
+      `SELECT id, username, email, full_name, role, is_active, 
+              can_manage_students, can_manage_settings, can_export_data, can_manage_admins 
+       FROM admin_users WHERE id = ? AND is_active = 1`,
+      [userId]
+    );
 
     console.log("Database query result:", users);
 
@@ -54,13 +69,24 @@ const authenticateToken = async (req, res, next) => {
       });
     }
 
-    req.user = users[0];
-    console.log("✅ User authenticated:", req.user);
+    const user = users[0];
+    console.log("✅ User found:", {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      can_manage_settings: user.can_manage_settings,
+    });
+
+    // Attach user to request object (use both for compatibility)
+    req.user = user;
+    req.admin = user; // For compatibility with existing code
+
+    console.log("✅ Authentication successful for:", user.username);
     console.log("=== AUTH MIDDLEWARE END ===");
 
     next();
   } catch (error) {
-    console.log("❌ Auth middleware error:", error);
+    console.error("❌ Auth middleware error:", error);
 
     if (error.name === "JsonWebTokenError") {
       return res.status(401).json({
@@ -84,87 +110,101 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// 🔥 NEW: Admin-only middleware
-const requireAdmin = async (req, res, next) => {
+// ============================================================================
+// Admin role requirement
+// ============================================================================
+const requireAdmin = (req, res, next) => {
   try {
-    // First authenticate the token
-    await new Promise((resolve, reject) => {
-      authenticateToken(req, res, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    console.log("=== ADMIN CHECK ===");
 
-    // Check if user is admin
-    if (!req.user) {
+    if (!req.user && !req.admin) {
+      console.log("❌ No user found in request");
       return res.status(401).json({
         success: false,
-        message: "Authentication required",
+        message: "Authentication required - user not found",
       });
     }
 
-    if (req.user.role !== "admin") {
+    // Use req.admin if available, fallback to req.user
+    const user = req.admin || req.user;
+
+    if (user.role !== "admin") {
+      console.log("❌ User is not admin:", user.role);
       return res.status(403).json({
         success: false,
         message: "Admin access required",
-        user_role: req.user.role,
+        user_role: user.role,
       });
     }
 
-    if (!req.user.is_active) {
+    if (!user.is_active) {
+      console.log("❌ User account is inactive");
       return res.status(403).json({
         success: false,
         message: "Account is inactive",
       });
     }
 
-    console.log("✅ Admin authentication passed:", req.user.username);
+    console.log("✅ Admin check passed:", user.username);
     next();
   } catch (error) {
-    console.error("❌ Admin auth error:", error);
+    console.error("❌ Admin check error:", error);
     return res.status(500).json({
       success: false,
-      message: "Admin authentication error",
+      message: "Admin check error",
       debug: error.message,
     });
   }
 };
 
-// 🔥 NEW: Permission-based middleware
+// ============================================================================
+// Permission-based middleware
+// ============================================================================
 const requirePermission = (permission) => {
-  return async (req, res, next) => {
+  return (req, res, next) => {
     try {
-      // First authenticate
-      await new Promise((resolve, reject) => {
-        authenticateToken(req, res, (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
+      console.log(`=== PERMISSION CHECK: ${permission} ===`);
 
-      if (!req.user) {
+      if (!req.user && !req.admin) {
+        console.log("❌ No user found in request");
         return res.status(401).json({
           success: false,
           message: "Authentication required",
         });
       }
 
+      // Use req.admin if available, fallback to req.user
+      const user = req.admin || req.user;
+
+      console.log("User permissions:", {
+        can_manage_students: user.can_manage_students,
+        can_manage_settings: user.can_manage_settings,
+        can_export_data: user.can_export_data,
+        can_manage_admins: user.can_manage_admins,
+      });
+
       // Check specific permission
-      const hasPermission = checkPermission(req.user, permission);
+      const hasPermission = checkPermission(user, permission);
+      console.log(`Permission ${permission}:`, hasPermission);
+
       if (!hasPermission) {
+        console.log(`❌ Permission denied: ${permission}`);
         return res.status(403).json({
           success: false,
-          message: `Permission '${permission}' required`,
+          message: `Access denied. ${permission.replace(
+            "_",
+            " "
+          )} permission required.`,
           user_permissions: {
-            can_manage_students: req.user.can_manage_students,
-            can_manage_settings: req.user.can_manage_settings,
-            can_export_data: req.user.can_export_data,
-            can_manage_admins: req.user.can_manage_admins,
+            can_manage_students: user.can_manage_students,
+            can_manage_settings: user.can_manage_settings,
+            can_export_data: user.can_export_data,
+            can_manage_admins: user.can_manage_admins,
           },
         });
       }
 
-      console.log(`✅ Permission '${permission}' granted to:`, req.user.username);
+      console.log(`✅ Permission granted: ${permission}`);
       next();
     } catch (error) {
       console.error(`❌ Permission '${permission}' error:`, error);
@@ -177,47 +217,72 @@ const requirePermission = (permission) => {
   };
 };
 
-// Helper function to check permissions
+// ============================================================================
+// Permission checker function
+// ============================================================================
 const checkPermission = (user, permission) => {
-  if (!user || !user.is_active) return false;
-  if (user.role === "admin" && user.can_manage_admins) return true; // Super admin
+  if (!user || !user.is_active) {
+    console.log("❌ User not active or not found");
+    return false;
+  }
+
+  // Super admin has all permissions
+  if (user.role === "admin" && user.can_manage_admins) {
+    console.log("✅ Super admin access granted");
+    return true;
+  }
 
   switch (permission) {
     case "manage_students":
-      return user.can_manage_students;
+    case "can_manage_students":
+      return Boolean(user.can_manage_students);
+
     case "manage_settings":
-      return user.can_manage_settings;
+    case "can_manage_settings":
+      return Boolean(user.can_manage_settings);
+
     case "export_data":
-      return user.can_export_data;
+    case "can_export_data":
+      return Boolean(user.can_export_data);
+
     case "manage_admins":
-      return user.can_manage_admins;
+    case "can_manage_admins":
+      return Boolean(user.can_manage_admins);
+
+    // Additional permissions
     case "manage_personnel":
-      return user.can_manage_settings; // Personnel management requires settings permission
+      return Boolean(user.can_manage_settings); // Personnel requires settings permission
+
+    case "manage_articles":
+      return Boolean(user.can_manage_settings); // Article management requires settings permission
+
+    case "manage_calendar":
+      return Boolean(user.can_manage_settings); // Calendar requires settings permission
+
     default:
+      console.log(`❌ Unknown permission: ${permission}`);
       return false;
   }
 };
 
-// 🔥 NEW: Role-based middleware
+// ============================================================================
+// Role-based middleware
+// ============================================================================
 const requireRole = (allowedRoles) => {
-  return async (req, res, next) => {
+  return (req, res, next) => {
     try {
-      await new Promise((resolve, reject) => {
-        authenticateToken(req, res, (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-
-      if (!req.user) {
+      if (!req.user && !req.admin) {
         return res.status(401).json({
           success: false,
           message: "Authentication required",
         });
       }
 
-      const userRole = req.user.role;
-      const hasRole = Array.isArray(allowedRoles) ? allowedRoles.includes(userRole) : allowedRoles === userRole;
+      const user = req.admin || req.user;
+      const userRole = user.role;
+      const hasRole = Array.isArray(allowedRoles)
+        ? allowedRoles.includes(userRole)
+        : allowedRoles === userRole;
 
       if (!hasRole) {
         return res.status(403).json({
@@ -237,10 +302,62 @@ const requireRole = (allowedRoles) => {
   };
 };
 
+// ============================================================================
+// GET /api/auth/profile endpoint (embedded in middleware)
+// ============================================================================
+const getProfile = (req, res) => {
+  try {
+    console.log("=== GET PROFILE REQUEST ===");
+
+    // Handle both req.admin and req.user
+    const currentUser = req.admin || req.user;
+
+    if (!currentUser) {
+      console.log("❌ No user found in request object");
+      return res.status(401).json({
+        success: false,
+        message: "User not found in request",
+      });
+    }
+
+    console.log("✅ Profile retrieved for:", currentUser.username);
+
+    // Proper response format that will show in test
+    res.json({
+      success: true,
+      message: "Profile retrieved successfully",
+      data: {
+        id: currentUser.id,
+        username: currentUser.username,
+        email: currentUser.email || "",
+        full_name: currentUser.full_name || "",
+        role: currentUser.role,
+        is_active: Boolean(currentUser.is_active),
+        permissions: {
+          can_manage_students: Boolean(currentUser.can_manage_students),
+          can_manage_settings: Boolean(currentUser.can_manage_settings),
+          can_export_data: Boolean(currentUser.can_export_data),
+          can_manage_admins: Boolean(currentUser.can_manage_admins),
+        },
+        last_login: currentUser.last_login,
+        created_at: currentUser.created_at,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Get profile error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to retrieve profile",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   authenticateToken,
   requireAdmin,
   requirePermission,
   requireRole,
   checkPermission,
+  getProfile, // Export profile function for use in routes
 };
