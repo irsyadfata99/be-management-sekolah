@@ -35,7 +35,14 @@ const corsOptions = {
   credentials: true,
   optionsSuccessStatus: 200,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Origin", "X-Requested-With", "Content-Type", "Accept", "Authorization", "Cache-Control"],
+  allowedHeaders: [
+    "Origin",
+    "X-Requested-With",
+    "Content-Type",
+    "Accept",
+    "Authorization",
+    "Cache-Control",
+  ],
 };
 
 app.use(cors(corsOptions));
@@ -199,18 +206,32 @@ app.get("/api/docs", (req, res) => {
 // School settings (public info)
 app.use("/api/settings", safeRequire("./src/routes/settings", "settings"));
 
+app.use("/api/contact", safeRequire("./src/routes/contact", "contact"));
+
 // Public articles
-app.use("/api/public/articles", safeRequire("./src/routes/public/articles", "public articles"));
+app.use(
+  "/api/public/articles",
+  safeRequire("./src/routes/public/articles", "public articles")
+);
 
 // Di server.js, tambahkan:
 app.use("/api/public/calendar", require("./src/routes/public/calendar"));
 
 // Public testimoni & alumni (NEW)
-app.use("/api/public/testimoni", safeRequire("./src/routes/public/testimoni", "public testimoni"));
-app.use("/api/public/alumni", safeRequire("./src/routes/public/alumni", "public alumni"));
+app.use(
+  "/api/public/testimoni",
+  safeRequire("./src/routes/public/testimoni", "public testimoni")
+);
+app.use(
+  "/api/public/alumni",
+  safeRequire("./src/routes/public/alumni", "public alumni")
+);
 
 // Public documents
-app.use("/api/public/documents", safeRequire("./src/routes/public/documents", "public documents"));
+app.use(
+  "/api/public/documents",
+  safeRequire("./src/routes/public/documents", "public documents")
+);
 
 // SPMB registration system
 app.use("/api/spmb", safeRequire("./src/routes/spmb", "spmb"));
@@ -226,29 +247,56 @@ app.use("/api/auth", safeRequire("./src/routes/auth", "authentication"));
 // ============================================================================
 
 // Dashboard statistics
-app.use("/api/admin/dashboard", safeRequire("./src/routes/admin/dashboard", "admin dashboard"));
+app.use(
+  "/api/admin/dashboard",
+  safeRequire("./src/routes/admin/dashboard", "admin dashboard")
+);
 
 // Personnel management (teachers/staff)
-app.use("/api/admin/personnel", safeRequire("./src/routes/admin/personnel", "admin personnel"));
+app.use(
+  "/api/admin/personnel",
+  safeRequire("./src/routes/admin/personnel", "admin personnel")
+);
 
 // Article management
-app.use("/api/admin/articles", safeRequire("./src/routes/admin/articles", "admin articles"));
+app.use(
+  "/api/admin/articles",
+  safeRequire("./src/routes/admin/articles", "admin articles")
+);
 
 // Calendar management
-app.use("/api/admin/calendar", safeRequire("./src/routes/admin/calendar", "admin calendar"));
+app.use(
+  "/api/admin/calendar",
+  safeRequire("./src/routes/admin/calendar", "admin calendar")
+);
 
 // Student management
-app.use("/api/admin/students", safeRequire("./src/routes/admin/students", "admin students"));
+app.use(
+  "/api/admin/students",
+  safeRequire("./src/routes/admin/students", "admin students")
+);
 
 // Testimoni & Alumni management (NEW)
-app.use("/api/admin/testimoni", safeRequire("./src/routes/admin/testimoni", "admin testimoni"));
-app.use("/api/admin/alumni", safeRequire("./src/routes/admin/alumni", "admin alumni"));
+app.use(
+  "/api/admin/testimoni",
+  safeRequire("./src/routes/admin/testimoni", "admin testimoni")
+);
+app.use(
+  "/api/admin/alumni",
+  safeRequire("./src/routes/admin/alumni", "admin alumni")
+);
 
 // Document management
-app.use("/api/admin/documents", safeRequire("./src/routes/admin/documents", "admin documents"));
+app.use(
+  "/api/admin/documents",
+  safeRequire("./src/routes/admin/documents", "admin documents")
+);
 
 // Export functionality
-app.use("/api/admin/export", safeRequire("./src/routes/admin/export", "admin export"));
+app.use(
+  "/api/admin/export",
+  safeRequire("./src/routes/admin/export", "admin export")
+);
 
 // ============================================================================
 // LEGACY ROUTE SUPPORT (for backward compatibility)
@@ -396,7 +444,9 @@ const server = app.listen(PORT, () => {
 // Handle server startup errors
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
-    console.error(`❌ Port ${PORT} is already in use. Please use a different port.`);
+    console.error(
+      `❌ Port ${PORT} is already in use. Please use a different port.`
+    );
     console.error("   Try: PORT=5001 npm start");
   } else {
     console.error("❌ Server startup error:", error);
