@@ -1,4 +1,3 @@
-// src/routes/public/calendar.js
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../../config/database");
@@ -44,8 +43,12 @@ router.get("/events", async (req, res) => {
       success: true,
       message: "Academic calendar events retrieved successfully",
       data: events,
+      meta: {
+        total: events.length,
+      },
     });
   } catch (error) {
+    console.error("Calendar API Error:", error);
     res.status(500).json({
       success: false,
       message: "Failed to retrieve calendar events",

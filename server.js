@@ -215,9 +215,6 @@ app.use("/api/public/documents", safeRequire("./src/routes/public/documents", "p
 // SPMB registration system
 app.use("/api/spmb", safeRequire("./src/routes/spmb", "spmb"));
 
-// Public calendar events
-app.use("/api/calendar/public", safeRequire("./src/routes/calendar", "public calendar"));
-
 // ============================================================================
 // AUTHENTICATION ROUTES
 // ============================================================================
