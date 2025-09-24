@@ -33,10 +33,10 @@ const authenticateToken = async (req, res, next) => {
       });
     }
 
+    // UPDATED: Query to 'admins' table (sesuai database Anda)
     const [users] = await pool.execute(
-      `SELECT id, username, email, full_name, role, is_active, 
-              can_manage_students, can_manage_settings, can_export_data, can_manage_admins 
-       FROM admin_users WHERE id = ? AND is_active = 1`,
+      `SELECT id, username, email, full_name, role, status 
+       FROM admins WHERE id = ? AND status = 'active'`,
       [userId]
     );
 
@@ -55,11 +55,7 @@ const authenticateToken = async (req, res, next) => {
       email: user.email || "",
       full_name: user.full_name || "",
       role: user.role || "admin",
-      is_active: user.is_active,
-      can_manage_students: user.can_manage_students,
-      can_manage_settings: user.can_manage_settings,
-      can_export_data: user.can_export_data,
-      can_manage_admins: user.can_manage_admins,
+      status: user.status,
     };
 
     next();
@@ -94,14 +90,7 @@ const requireAdmin = (req, res, next) => {
       });
     }
 
-    if (req.user.role !== "admin") {
-      return res.status(403).json({
-        success: false,
-        message: "Admin access required",
-      });
-    }
-
-    if (!req.user.is_active) {
+    if (req.user.status !== "active") {
       return res.status(403).json({
         success: false,
         message: "Account is inactive",
@@ -118,7 +107,7 @@ const requireAdmin = (req, res, next) => {
   }
 };
 
-const requirePermission = (permission) => {
+const requireRole = (allowedRoles) => {
   return (req, res, next) => {
     try {
       if (!req.user) {
@@ -128,63 +117,32 @@ const requirePermission = (permission) => {
         });
       }
 
-      const hasPermission = checkPermission(req.user, permission);
+      const userRole = req.user.role;
+      const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
 
-      if (!hasPermission) {
+      if (!roles.includes(userRole)) {
         return res.status(403).json({
           success: false,
-          message: `Access denied. ${permission.replace(
-            "_",
-            " "
-          )} permission required.`,
+          message: `Access denied. Required role: ${roles.join(" or ")}`,
         });
       }
 
       next();
     } catch (error) {
-      console.error(`Permission '${permission}' error:`, error);
+      console.error(`Role check error:`, error);
       return res.status(500).json({
         success: false,
-        message: "Permission check error",
+        message: "Role check error",
       });
     }
   };
 };
 
-const checkPermission = (user, permission) => {
-  if (!user || !user.is_active) {
-    return false;
-  }
-
-  if (user.role === "admin" && user.can_manage_admins) {
-    return true;
-  }
-
-  switch (permission) {
-    case "manage_students":
-    case "can_manage_students":
-      return Boolean(user.can_manage_students);
-
-    case "manage_settings":
-    case "can_manage_settings":
-      return Boolean(user.can_manage_settings);
-
-    case "export_data":
-    case "can_export_data":
-      return Boolean(user.can_export_data);
-
-    case "manage_admins":
-    case "can_manage_admins":
-      return Boolean(user.can_manage_admins);
-
-    default:
-      return false;
-  }
-};
+const requireSuperAdmin = requireRole("super_admin");
 
 module.exports = {
   authenticateToken,
   requireAdmin,
-  requirePermission,
-  checkPermission,
+  requireRole,
+  requireSuperAdmin,
 };
