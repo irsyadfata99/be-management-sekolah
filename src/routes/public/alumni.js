@@ -1,5 +1,5 @@
 // ============================================================================
-// PUBLIC ALUMNI ROUTES - Simple Pattern (Copy dari public/articles.js)
+// PUBLIC ALUMNI ROUTES - FIXED MySQL Parameter Error
 // File: src/routes/public/alumni.js
 // ============================================================================
 
@@ -44,7 +44,16 @@ const mockAlumni = [
 // GET /api/public/alumni - Get alumni for frontend display
 router.get("/", async (req, res) => {
   try {
-    const { limit = 4, search, tahun_lulus } = req.query;
+    console.log("Alumni request received:", req.query);
+
+    // Parse limit dengan default value dan pastikan integer
+    const limit = parseInt(req.query.limit) || 4;
+    const search = req.query.search || "";
+    const tahun_lulus = req.query.tahun_lulus
+      ? parseInt(req.query.tahun_lulus)
+      : null;
+
+    console.log("Parsed params:", { limit, search, tahun_lulus });
 
     // Fallback to mock data if database not available
     if (!pool) {
@@ -57,11 +66,9 @@ router.get("/", async (req, res) => {
         );
       }
       if (tahun_lulus) {
-        data = data.filter(
-          (item) => item.tahun_lulus === parseInt(tahun_lulus)
-        );
+        data = data.filter((item) => item.tahun_lulus === tahun_lulus);
       }
-      data = data.slice(0, parseInt(limit));
+      data = data.slice(0, limit);
 
       return res.json({
         success: true,
@@ -70,7 +77,7 @@ router.get("/", async (req, res) => {
       });
     }
 
-    // Build query
+    // Build query dengan parameter yang benar
     let query =
       "SELECT id, nama_lengkap, tahun_lulus, pekerjaan_sekarang, deskripsi, foto_path, created_at FROM alumni WHERE is_active = 1";
     let params = [];
@@ -83,18 +90,29 @@ router.get("/", async (req, res) => {
 
     if (tahun_lulus) {
       query += " AND tahun_lulus = ?";
-      params.push(parseInt(tahun_lulus));
+      params.push(tahun_lulus);
     }
 
     query += " ORDER BY display_order ASC, created_at DESC LIMIT ?";
-    params.push(parseInt(limit));
+    params.push(limit); // Pastikan limit adalah integer
+
+    console.log("Executing query:", query);
+    console.log("With params:", params);
 
     const [alumni] = await pool.execute(query, params);
+
+    console.log(`Alumni query successful: ${alumni.length} rows returned`);
+
+    // Process foto_path
+    const processedAlumni = alumni.map((row) => ({
+      ...row,
+      foto_path: row.foto_path ? `/uploads/alumni/${row.foto_path}` : null,
+    }));
 
     res.json({
       success: true,
       message: "Alumni retrieved successfully",
-      data: alumni,
+      data: processedAlumni,
     });
   } catch (error) {
     console.error("Error fetching public alumni:", error);
@@ -111,19 +129,19 @@ router.get("/", async (req, res) => {
 // GET /api/public/alumni/featured - Get featured alumni
 router.get("/featured", async (req, res) => {
   try {
-    const { limit = 4 } = req.query;
+    const limit = parseInt(req.query.limit) || 4;
 
     if (!pool) {
       return res.json({
         success: true,
         message: "Featured alumni (mock)",
-        data: mockAlumni.slice(0, parseInt(limit)),
+        data: mockAlumni.slice(0, limit),
       });
     }
 
     const [alumni] = await pool.execute(
       "SELECT id, nama_lengkap, tahun_lulus, pekerjaan_sekarang, deskripsi, foto_path FROM alumni WHERE is_active = 1 ORDER BY display_order ASC LIMIT ?",
-      [parseInt(limit)]
+      [limit] // Ensure limit is integer
     );
 
     res.json({

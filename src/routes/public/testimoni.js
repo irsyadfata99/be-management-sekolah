@@ -1,5 +1,5 @@
 // ============================================================================
-// PUBLIC TESTIMONI ROUTES - Simple Pattern (Copy dari public/articles.js)
+// PUBLIC TESTIMONI ROUTES - FIXED MySQL Parameter Error
 // File: src/routes/public/testimoni.js
 // ============================================================================
 
@@ -43,7 +43,13 @@ const mockTestimoni = [
 // GET /api/public/testimoni - Get testimoni for frontend display
 router.get("/", async (req, res) => {
   try {
-    const { limit = 5, search } = req.query;
+    console.log("Testimoni request received:", req.query);
+
+    // Parse limit dengan default value dan pastikan integer
+    const limit = parseInt(req.query.limit) || 5;
+    const search = req.query.search || "";
+
+    console.log("Parsed params:", { limit, search });
 
     // Fallback to mock data if database not available
     if (!pool) {
@@ -55,7 +61,7 @@ router.get("/", async (req, res) => {
             item.deskripsi.toLowerCase().includes(search.toLowerCase())
         );
       }
-      data = data.slice(0, parseInt(limit));
+      data = data.slice(0, limit);
 
       return res.json({
         success: true,
@@ -64,7 +70,7 @@ router.get("/", async (req, res) => {
       });
     }
 
-    // Build query
+    // Build query dengan parameter yang benar
     let query =
       "SELECT id, nama_pemberi, status, deskripsi, foto_path, created_at FROM testimoni WHERE is_active = 1";
     let params = [];
@@ -75,14 +81,27 @@ router.get("/", async (req, res) => {
     }
 
     query += " ORDER BY display_order ASC, created_at DESC LIMIT ?";
-    params.push(parseInt(limit));
+    params.push(limit); // Pastikan limit adalah integer
+
+    console.log("Executing query:", query);
+    console.log("With params:", params);
 
     const [testimoni] = await pool.execute(query, params);
+
+    console.log(
+      `Testimoni query successful: ${testimoni.length} rows returned`
+    );
+
+    // Process foto_path
+    const processedTestimoni = testimoni.map((row) => ({
+      ...row,
+      foto_path: row.foto_path ? `/uploads/testimoni/${row.foto_path}` : null,
+    }));
 
     res.json({
       success: true,
       message: "Testimoni retrieved successfully",
-      data: testimoni,
+      data: processedTestimoni,
     });
   } catch (error) {
     console.error("Error fetching public testimoni:", error);
@@ -99,19 +118,19 @@ router.get("/", async (req, res) => {
 // GET /api/public/testimoni/featured - Get featured testimoni
 router.get("/featured", async (req, res) => {
   try {
-    const { limit = 3 } = req.query;
+    const limit = parseInt(req.query.limit) || 3;
 
     if (!pool) {
       return res.json({
         success: true,
         message: "Featured testimoni (mock)",
-        data: mockTestimoni.slice(0, parseInt(limit)),
+        data: mockTestimoni.slice(0, limit),
       });
     }
 
     const [testimoni] = await pool.execute(
       "SELECT id, nama_pemberi, status, deskripsi, foto_path FROM testimoni WHERE is_active = 1 ORDER BY display_order ASC LIMIT ?",
-      [parseInt(limit)]
+      [limit] // Ensure limit is integer
     );
 
     res.json({
