@@ -35,7 +35,14 @@ const corsOptions = {
   credentials: true,
   optionsSuccessStatus: 200,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Origin", "X-Requested-With", "Content-Type", "Accept", "Authorization", "Cache-Control"],
+  allowedHeaders: [
+    "Origin",
+    "X-Requested-With",
+    "Content-Type",
+    "Accept",
+    "Authorization",
+    "Cache-Control",
+  ],
 };
 
 app.use(cors(corsOptions));
@@ -202,17 +209,32 @@ app.use("/api/settings", safeRequire("./src/routes/settings", "settings"));
 app.use("/api/contact", safeRequire("./src/routes/contact", "contact"));
 
 // Public articles
-app.use("/api/public/articles", safeRequire("./src/routes/public/articles", "public articles"));
+app.use(
+  "/api/public/articles",
+  safeRequire("./src/routes/public/articles", "public articles")
+);
 
 // Public calendar
-app.use("/api/public/calendar", safeRequire("./src/routes/public/calendar", "public calendar"));
+app.use(
+  "/api/public/calendar",
+  safeRequire("./src/routes/public/calendar", "public calendar")
+);
 
 // Public testimoni & alumni
-app.use("/api/public/testimoni", safeRequire("./src/routes/public/testimoni", "public testimoni"));
-app.use("/api/public/alumni", safeRequire("./src/routes/public/alumni", "public alumni"));
+app.use(
+  "/api/public/testimoni",
+  safeRequire("./src/routes/public/testimoni", "public testimoni")
+);
+app.use(
+  "/api/public/alumni",
+  safeRequire("./src/routes/public/alumni", "public alumni")
+);
 
 // Public documents
-app.use("/api/public/documents", safeRequire("./src/routes/public/documents", "public documents"));
+app.use(
+  "/api/public/documents",
+  safeRequire("./src/routes/public/documents", "public documents")
+);
 
 // SPMB registration system
 app.use("/api/spmb", safeRequire("./src/routes/spmb", "spmb"));
@@ -228,7 +250,10 @@ app.use("/api/auth", safeRequire("./src/routes/auth", "authentication"));
 // ============================================================================
 
 // Import middleware for admin routes
-const { authenticateToken, requireAdmin } = safeRequire("./src/middleware/auth", "auth middleware") || {
+const { authenticateToken, requireAdmin } = safeRequire(
+  "./src/middleware/auth",
+  "auth middleware"
+) || {
   authenticateToken: (req, res, next) => {
     res.status(503).json({
       success: false,
@@ -240,78 +265,116 @@ const { authenticateToken, requireAdmin } = safeRequire("./src/middleware/auth",
 };
 
 // CRITICAL FIX: Direct admin profile endpoint (required by frontend)
-app.get("/api/admin/profile", authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    console.log("🔍 Profile endpoint accessed by:", req.user?.username || "unknown");
+app.get(
+  "/api/admin/profile",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      console.log(
+        "🔍 Profile endpoint accessed by:",
+        req.user?.username || "unknown"
+      );
 
-    if (!req.user) {
-      return res.status(401).json({
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          message: "User not found in request",
+          error: "NO_USER_DATA",
+        });
+      }
+
+      // Return comprehensive user profile data
+      res.json({
+        success: true,
+        message: "Profile retrieved successfully",
+        data: {
+          user: {
+            id: req.user.id,
+            username: req.user.username,
+            email: req.user.email || "",
+            full_name: req.user.full_name || req.user.username,
+            role: req.user.role || "admin",
+            permissions: {
+              can_manage_students: req.user.can_manage_students || false,
+              can_manage_settings: req.user.can_manage_settings || false,
+              can_export_data: req.user.can_export_data || false,
+              can_manage_admins: req.user.can_manage_admins || false,
+            },
+            is_active: req.user.is_active || true,
+            last_login: req.user.last_login || null,
+          },
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("❌ Profile endpoint error:", error);
+      res.status(500).json({
         success: false,
-        message: "User not found in request",
-        error: "NO_USER_DATA",
+        message: "Failed to retrieve profile",
+        error: error.message,
+        timestamp: new Date().toISOString(),
       });
     }
-
-    // Return comprehensive user profile data
-    res.json({
-      success: true,
-      message: "Profile retrieved successfully",
-      data: {
-        user: {
-          id: req.user.id,
-          username: req.user.username,
-          email: req.user.email || "",
-          full_name: req.user.full_name || req.user.username,
-          role: req.user.role || "admin",
-          permissions: {
-            can_manage_students: req.user.can_manage_students || false,
-            can_manage_settings: req.user.can_manage_settings || false,
-            can_export_data: req.user.can_export_data || false,
-            can_manage_admins: req.user.can_manage_admins || false,
-          },
-          is_active: req.user.is_active || true,
-          last_login: req.user.last_login || null,
-        },
-      },
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("❌ Profile endpoint error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve profile",
-      error: error.message,
-      timestamp: new Date().toISOString(),
-    });
   }
-});
+);
 
 // Dashboard routes
-app.use("/api/admin/dashboard", safeRequire("./src/routes/admin/dashboard", "admin dashboard"));
+app.use(
+  "/api/admin/dashboard",
+  safeRequire("./src/routes/admin/dashboard", "admin dashboard")
+);
 
-app.use("/api/admin/spmb", safeRequire("./src/routes/admin/spmb", "admin spmb"));
+app.use(
+  "/api/admin/spmb",
+  safeRequire("./src/routes/admin/spmb", "admin spmb")
+);
 
 // Personnel management (teachers/staff)
-app.use("/api/admin/personnel", safeRequire("./src/routes/admin/personnel", "admin personnel"));
+app.use(
+  "/api/admin/personnel",
+  safeRequire("./src/routes/admin/personnel", "admin personnel")
+);
 
 // Article management
-app.use("/api/admin/articles", safeRequire("./src/routes/admin/articles", "admin articles"));
+app.use(
+  "/api/admin/articles",
+  safeRequire("./src/routes/admin/article", "admin articles")
+);
 
 // Calendar management
-app.use("/api/admin/calendar", safeRequire("./src/routes/admin/calendar", "admin calendar"));
+app.use(
+  "/api/admin/calendar",
+  safeRequire("./src/routes/admin/calendar", "admin calendar")
+);
 
 // Student management
-app.use("/api/admin/students", safeRequire("./src/routes/admin/students", "admin students"));
+app.use(
+  "/api/admin/students",
+  safeRequire("./src/routes/admin/students", "admin students")
+);
 
 // Testimoni & Alumni management
-app.use("/api/admin/testimoni", safeRequire("./src/routes/admin/testimoni", "admin testimoni"));
-app.use("/api/admin/alumni", safeRequire("./src/routes/admin/alumni", "admin alumni"));
+app.use(
+  "/api/admin/testimoni",
+  safeRequire("./src/routes/admin/testimoni", "admin testimoni")
+);
+app.use(
+  "/api/admin/alumni",
+  safeRequire("./src/routes/admin/alumni", "admin alumni")
+);
 
 // Document management
-app.use("/api/admin/documents", safeRequire("./src/routes/admin/documents", "admin documents"));
+app.use(
+  "/api/admin/documents",
+  safeRequire("./src/routes/admin/documents", "admin documents")
+);
 
 // Export functionality
-app.use("/api/admin/export", safeRequire("./src/routes/admin/export", "admin export"));
+app.use(
+  "/api/admin/export",
+  safeRequire("./src/routes/admin/export", "admin export")
+);
 
 // ============================================================================
 // DEBUG & TEST ENDPOINTS (Development Only)
@@ -357,35 +420,42 @@ if (process.env.NODE_ENV !== "production") {
   });
 
   // Database test endpoint
-  app.get("/api/admin/db-test", authenticateToken, requireAdmin, async (req, res) => {
-    try {
-      if (!pool) {
-        return res.status(503).json({
+  app.get(
+    "/api/admin/db-test",
+    authenticateToken,
+    requireAdmin,
+    async (req, res) => {
+      try {
+        if (!pool) {
+          return res.status(503).json({
+            success: false,
+            message: "Database pool not available",
+          });
+        }
+
+        const [result] = await pool.execute(
+          "SELECT COUNT(*) as count FROM admin_users WHERE is_active = 1"
+        );
+
+        res.json({
+          success: true,
+          message: "Database test successful",
+          data: {
+            active_admin_users: result[0]?.count || 0,
+            database_status: dbStatus,
+            current_user: req.user?.username || "unknown",
+          },
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        res.status(500).json({
           success: false,
-          message: "Database pool not available",
+          message: "Database test failed",
+          error: error.message,
         });
       }
-
-      const [result] = await pool.execute("SELECT COUNT(*) as count FROM admin_users WHERE is_active = 1");
-
-      res.json({
-        success: true,
-        message: "Database test successful",
-        data: {
-          active_admin_users: result[0]?.count || 0,
-          database_status: dbStatus,
-          current_user: req.user?.username || "unknown",
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        message: "Database test failed",
-        error: error.message,
-      });
     }
-  });
+  );
 }
 
 // ============================================================================
@@ -540,7 +610,9 @@ const server = app.listen(PORT, () => {
 // Handle server startup errors
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
-    console.error(`❌ Port ${PORT} is already in use. Please use a different port.`);
+    console.error(
+      `❌ Port ${PORT} is already in use. Please use a different port.`
+    );
     console.error("   Try: PORT=5001 npm start");
   } else {
     console.error("❌ Server startup error:", error);

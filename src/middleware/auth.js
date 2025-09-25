@@ -1,10 +1,10 @@
-// ============================================================================
-// FIXED: src/middleware/auth.js - Consistent with admin_users table
-// ============================================================================
-
 const jwt = require("jsonwebtoken");
 const { pool } = require("../config/database");
 
+/**
+ * Authentication middleware
+ * Verifies JWT token and attaches user data to request
+ */
 const authenticateToken = async (req, res, next) => {
   try {
     const authHeader = req.headers["authorization"];
@@ -13,69 +13,78 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "Access token required",
+        error: "NO_TOKEN",
       });
     }
 
-    let token;
-    if (authHeader.startsWith("Bearer ")) {
-      token = authHeader.substring(7);
-    } else {
-      token = authHeader;
+    // Extract token (support both "Bearer TOKEN" and just "TOKEN" format)
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.substring(7)
+      : authHeader;
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid token format",
+        error: "INVALID_FORMAT",
+      });
     }
 
-    console.log("Token received:", token.substring(0, 20) + "...");
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "school_template_secret");
-
-    console.log("Decoded token:", decoded);
+    // Verify JWT token
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET || "school_template_secret"
+    );
 
     const userId = decoded.id || decoded.userId;
 
     if (!userId) {
       return res.status(401).json({
         success: false,
-        message: "Invalid token structure - missing user ID",
+        message: "Invalid token structure",
+        error: "INVALID_TOKEN",
       });
     }
 
-    // FIXED: Query ke admin_users table (sama dengan auth route)
-    const [users] = await pool.execute("SELECT id, username, email, full_name, role, is_active FROM admin_users WHERE id = ? AND is_active = 1", [userId]);
-
-    console.log("Database query result:", users.length > 0 ? "User found" : "User not found");
+    // Fetch user from database
+    const [users] = await pool.execute(
+      `SELECT id, username, email, full_name, role, is_active,
+              can_manage_students, can_manage_settings, 
+              can_export_data, can_manage_admins
+       FROM admin_users 
+       WHERE id = ? AND is_active = 1`,
+      [userId]
+    );
 
     if (users.length === 0) {
       return res.status(401).json({
         success: false,
-        message: "Invalid token - user not found or inactive",
+        message: "User not found or inactive",
+        error: "USER_NOT_FOUND",
       });
     }
 
-    const user = users[0];
-
-    // Set user object for subsequent middleware
+    // Attach user to request object
     req.user = {
-      id: user.id,
-      username: user.username,
-      email: user.email || "",
-      full_name: user.full_name || "",
-      role: user.role || "admin",
-      is_active: user.is_active,
-      // Include permissions
-      can_manage_students: user.can_manage_students,
-      can_manage_settings: user.can_manage_settings,
-      can_export_data: user.can_export_data,
-      can_manage_admins: user.can_manage_admins,
+      id: users[0].id,
+      username: users[0].username,
+      email: users[0].email || "",
+      full_name: users[0].full_name || users[0].username,
+      role: users[0].role || "admin",
+      is_active: users[0].is_active,
+      can_manage_students: users[0].can_manage_students || false,
+      can_manage_settings: users[0].can_manage_settings || false,
+      can_export_data: users[0].can_export_data || false,
+      can_manage_admins: users[0].can_manage_admins || false,
     };
 
-    console.log("Authentication successful for user:", user.username);
     next();
   } catch (error) {
-    console.error("Auth middleware error:", error);
-
+    // Handle specific JWT errors
     if (error.name === "JsonWebTokenError") {
       return res.status(401).json({
         success: false,
-        message: "Invalid token format",
+        message: "Invalid token",
         error: "JWT_INVALID",
       });
     } else if (error.name === "TokenExpiredError") {
@@ -84,20 +93,48 @@ const authenticateToken = async (req, res, next) => {
         message: "Token expired",
         error: "JWT_EXPIRED",
       });
-    } else {
-      return res.status(500).json({
-        success: false,
-        message: "Authentication error",
-        error: "AUTH_ERROR",
-      });
     }
+
+    // Database or other errors
+    console.error("Authentication error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Authentication failed",
+      error: "AUTH_ERROR",
+    });
   }
 };
 
+/**
+ * Admin authorization middleware
+ * Requires user to be authenticated and active
+ */
 const requireAdmin = (req, res, next) => {
-  try {
-    console.log("RequireAdmin check for user:", req.user?.username);
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      message: "Authentication required",
+      error: "NO_USER",
+    });
+  }
 
+  if (!req.user.is_active) {
+    return res.status(403).json({
+      success: false,
+      message: "Account is inactive",
+      error: "ACCOUNT_INACTIVE",
+    });
+  }
+
+  next();
+};
+
+/**
+ * Role-based authorization middleware
+ * @param {string|string[]} allowedRoles - Required role(s)
+ */
+const requireRole = (allowedRoles) => {
+  return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({
         success: false,
@@ -106,68 +143,31 @@ const requireAdmin = (req, res, next) => {
       });
     }
 
-    // FIXED: Check is_active instead of status
-    if (!req.user.is_active) {
+    const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
+
+    if (!roles.includes(req.user.role)) {
       return res.status(403).json({
         success: false,
-        message: "Account is inactive",
-        error: "ACCOUNT_INACTIVE",
+        message: `Access denied. Required role: ${roles.join(" or ")}`,
+        error: "INSUFFICIENT_ROLE",
       });
     }
 
-    console.log("Admin access granted for:", req.user.username);
     next();
-  } catch (error) {
-    console.error("Admin check error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Admin check error",
-      error: "ADMIN_CHECK_ERROR",
-    });
-  }
-};
-
-const requireRole = (allowedRoles) => {
-  return (req, res, next) => {
-    try {
-      if (!req.user) {
-        return res.status(401).json({
-          success: false,
-          message: "Authentication required",
-          error: "NO_USER",
-        });
-      }
-
-      const userRole = req.user.role;
-      const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
-
-      if (!roles.includes(userRole)) {
-        return res.status(403).json({
-          success: false,
-          message: `Access denied. Required role: ${roles.join(" or ")}`,
-          error: "INSUFFICIENT_ROLE",
-        });
-      }
-
-      next();
-    } catch (error) {
-      console.error(`Role check error:`, error);
-      return res.status(500).json({
-        success: false,
-        message: "Role check error",
-        error: "ROLE_CHECK_ERROR",
-      });
-    }
   };
 };
 
-// Permission-based middleware
+/**
+ * Permission-based authorization middleware
+ * @param {string} permission - Required permission
+ */
 const requirePermission = (permission) => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({
         success: false,
         message: "Authentication required",
+        error: "NO_USER",
       });
     }
 
@@ -175,6 +175,7 @@ const requirePermission = (permission) => {
       return res.status(403).json({
         success: false,
         message: `Access denied. Required permission: ${permission}`,
+        error: "INSUFFICIENT_PERMISSION",
       });
     }
 
@@ -182,6 +183,9 @@ const requirePermission = (permission) => {
   };
 };
 
+/**
+ * Super admin authorization
+ */
 const requireSuperAdmin = requireRole("super_admin");
 
 module.exports = {

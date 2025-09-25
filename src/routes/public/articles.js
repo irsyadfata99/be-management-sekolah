@@ -1,320 +1,566 @@
+// src/routes/public/article.js
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../../config/database");
 
 // ============================================================================
-// EMERGENCY FIX - PUBLIC ARTIKEL ROUTES
-// Alternative approach to avoid MySQL parameter issues
+// GET ALL PUBLISHED ARTICLES - With Pagination and Filters
 // ============================================================================
 
-// GET /api/public/articles - Emergency fix version
 router.get("/", async (req, res) => {
   try {
     const {
-      page = "1",
-      limit = "9",
-      search,
-      kategori,
-      featured,
-      sort = "tanggal_publish",
-      order = "desc",
+      page = 1,
+      limit = 12,
+      search = "",
+      kategori_id = "",
+      kategori_slug = "",
+      sort = "created_at",
+      order = "DESC",
     } = req.query;
 
-    // Proper parameter conversion
-    const pageNum = Math.max(1, parseInt(page) || 1);
-    const limitNum = Math.min(50, Math.max(1, parseInt(limit) || 9));
-    const offset = (pageNum - 1) * limitNum;
+    const offset = (page - 1) * limit;
 
-    console.log("📊 Query params:", {
-      page: pageNum,
-      limit: limitNum,
-      offset,
-      search,
-      kategori,
-      featured,
-    });
-
-    // STEP 1: Check if tables exist
-    try {
-      const [tablesCheck] = await pool.execute("SHOW TABLES");
-      console.log(
-        "📊 Available tables:",
-        tablesCheck.map((t) => Object.values(t)[0])
-      );
-
-      const hasArticles = tablesCheck.some(
-        (t) => Object.values(t)[0] === "articles"
-      );
-      const hasCategories = tablesCheck.some(
-        (t) => Object.values(t)[0] === "categories"
-      );
-
-      if (!hasArticles) {
-        return res.status(500).json({
-          success: false,
-          message: "Articles table does not exist",
-          error:
-            "Database not properly initialized. Please run the CREATE TABLE script first.",
-        });
-      }
-
-      console.log(
-        `✅ Tables check: articles=${hasArticles}, categories=${hasCategories}`
-      );
-    } catch (tableError) {
-      console.error("❌ Table check error:", tableError);
-      return res.status(500).json({
-        success: false,
-        message: "Database table check failed",
-        error: tableError.message,
-      });
-    }
-
-    // STEP 2: Try simple query first (without LIMIT/OFFSET)
-    let baseQuery = `
-      SELECT a.id, a.judul, a.slug, a.konten_singkat, a.konten_lengkap, 
-             a.gambar_utama, a.kategori_id, a.penulis, a.is_published, 
-             a.tanggal_publish, a.is_featured, a.meta_description, 
-             a.tags, a.views, a.created_at, a.updated_at,
-             k.nama_kategori, k.slug as slug_kategori, k.warna as warna_kategori
-      FROM articles a 
-      LEFT JOIN categories k ON a.kategori_id = k.id 
-      WHERE a.is_published = 1
-    `;
-
+    // Build WHERE clause - only published articles
+    let whereClause = "WHERE a.is_published = 1";
     const params = [];
 
-    // Apply filters
-    if (search && search.trim()) {
-      baseQuery += " AND (a.judul LIKE ? OR a.konten_singkat LIKE ?)";
-      const searchTerm = `%${search.trim()}%`;
-      params.push(searchTerm, searchTerm);
+    // Search by title, content excerpt, or tags
+    if (search) {
+      whereClause +=
+        " AND (a.judul LIKE ? OR a.konten_singkat LIKE ? OR a.tags LIKE ?)";
+      const searchPattern = `%${search}%`;
+      params.push(searchPattern, searchPattern, searchPattern);
     }
 
-    if (kategori && kategori.trim()) {
-      baseQuery += " AND k.slug = ?";
-      params.push(kategori.trim());
+    // Filter by category ID
+    if (kategori_id) {
+      whereClause += " AND a.kategori_id = ?";
+      params.push(kategori_id);
     }
 
-    if (featured === "1") {
-      baseQuery += " AND a.is_featured = 1";
-    } else if (featured === "0") {
-      baseQuery += " AND a.is_featured = 0";
+    // Filter by category slug
+    if (kategori_slug) {
+      whereClause += " AND c.slug = ?";
+      params.push(kategori_slug);
     }
 
-    // Sorting
-    const allowedSorts = ["tanggal_publish", "created_at", "judul", "views"];
-    const sortField = allowedSorts.includes(sort) ? sort : "tanggal_publish";
-    const sortOrder = order.toLowerCase() === "asc" ? "ASC" : "DESC";
+    // Get total count
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total 
+       FROM articles a 
+       LEFT JOIN categories c ON a.kategori_id = c.id 
+       ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
 
-    baseQuery += ` ORDER BY a.${sortField} ${sortOrder}`;
+    // Validate sort column
+    const allowedSortColumns = [
+      "created_at",
+      "tanggal_publish",
+      "judul",
+      "views",
+    ];
+    const sortColumn = allowedSortColumns.includes(sort) ? sort : "created_at";
+    const sortOrder = order.toUpperCase() === "ASC" ? "ASC" : "DESC";
 
-    console.log("🔍 Base Query (no limit):", baseQuery);
-    console.log("🔍 Parameters:", params);
+    // Get paginated data
+    const query = `
+      SELECT 
+        a.id,
+        a.judul,
+        a.slug,
+        a.konten_singkat,
+        a.gambar_utama,
+        a.penulis,
+        a.tanggal_publish,
+        a.is_featured,
+        a.views,
+        a.tags,
+        a.created_at,
+        c.id as kategori_id,
+        c.nama_kategori,
+        c.slug as kategori_slug,
+        c.warna as kategori_warna
+      FROM articles a
+      LEFT JOIN categories c ON a.kategori_id = c.id
+      ${whereClause}
+      ORDER BY a.${sortColumn} ${sortOrder}
+      LIMIT ? OFFSET ?
+    `;
 
-    // STEP 3: Execute base query first
-    let allArticles;
-    try {
-      const [results] = await pool.execute(baseQuery, params);
-      allArticles = results;
-      console.log(
-        `✅ Base query successful: ${allArticles.length} articles found`
-      );
-    } catch (baseError) {
-      console.error("❌ Base query error:", baseError);
-      return res.status(500).json({
+    const [articles] = await pool.execute(query, [
+      ...params,
+      parseInt(limit),
+      offset,
+    ]);
+
+    res.json({
+      success: true,
+      data: articles,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching public articles:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal mengambil data artikel",
+      error: error.message,
+    });
+  }
+});
+
+// ============================================================================
+// GET FEATURED ARTICLES
+// ============================================================================
+
+router.get("/featured", async (req, res) => {
+  try {
+    const { limit = 5 } = req.query;
+
+    const [articles] = await pool.execute(
+      `
+      SELECT 
+        a.id,
+        a.judul,
+        a.slug,
+        a.konten_singkat,
+        a.gambar_utama,
+        a.penulis,
+        a.tanggal_publish,
+        a.is_featured,
+        a.views,
+        a.tags,
+        c.id as kategori_id,
+        c.nama_kategori,
+        c.slug as kategori_slug,
+        c.warna as kategori_warna
+      FROM articles a
+      LEFT JOIN categories c ON a.kategori_id = c.id
+      WHERE a.is_published = 1 AND a.is_featured = 1
+      ORDER BY a.tanggal_publish DESC
+      LIMIT ?
+    `,
+      [parseInt(limit)]
+    );
+
+    res.json({
+      success: true,
+      data: articles,
+    });
+  } catch (error) {
+    console.error("Error fetching featured articles:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal mengambil artikel unggulan",
+      error: error.message,
+    });
+  }
+});
+
+// ============================================================================
+// GET ARTICLES BY CATEGORY SLUG
+// ============================================================================
+
+router.get("/kategori/:slug", async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const { page = 1, limit = 12 } = req.query;
+
+    const offset = (page - 1) * limit;
+
+    // Check if category exists
+    const [categories] = await pool.execute(
+      "SELECT id, nama_kategori, slug, deskripsi, warna FROM categories WHERE slug = ?",
+      [slug]
+    );
+
+    if (categories.length === 0) {
+      return res.status(404).json({
         success: false,
-        message: "Failed to execute base query",
-        error: baseError.message,
-        debug: {
-          query: baseQuery,
-          params: params,
-          sqlMessage: baseError.sqlMessage,
-        },
+        message: "Kategori tidak ditemukan",
       });
     }
 
-    // STEP 4: Apply pagination manually (since LIMIT/OFFSET causes issues)
-    const total = allArticles.length;
-    const paginatedArticles = allArticles.slice(offset, offset + limitNum);
+    const category = categories[0];
 
-    console.log(
-      `📄 Pagination: showing ${paginatedArticles.length} of ${total} articles (page ${pageNum})`
+    // Get total count
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total 
+       FROM articles 
+       WHERE kategori_id = ? AND is_published = 1`,
+      [category.id]
+    );
+    const total = countResult[0].total;
+
+    // Get articles
+    const [articles] = await pool.execute(
+      `
+      SELECT 
+        a.id,
+        a.judul,
+        a.slug,
+        a.konten_singkat,
+        a.gambar_utama,
+        a.penulis,
+        a.tanggal_publish,
+        a.is_featured,
+        a.views,
+        a.tags,
+        a.created_at
+      FROM articles a
+      WHERE a.kategori_id = ? AND a.is_published = 1
+      ORDER BY a.tanggal_publish DESC
+      LIMIT ? OFFSET ?
+    `,
+      [category.id, parseInt(limit), offset]
     );
 
-    // Process articles data
-    const processedArticles = paginatedArticles.map((article) => ({
-      ...article,
-      tags: article.tags
-        ? article.tags
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean)
-        : [],
-      is_published: Boolean(article.is_published),
-      is_featured: Boolean(article.is_featured),
-    }));
-
     res.json({
       success: true,
-      message: "Published articles retrieved successfully",
-      data: processedArticles,
-      pagination: {
-        current_page: pageNum,
-        per_page: limitNum,
-        total_pages: Math.ceil(total / limitNum),
-        total_articles: total,
-        has_next: pageNum * limitNum < total,
-        has_prev: pageNum > 1,
+      data: {
+        category: category,
+        articles: articles,
       },
-      debug: {
-        query_method: "manual_pagination",
-        total_found: total,
-        slice_start: offset,
-        slice_end: offset + limitNum,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / limit),
       },
     });
   } catch (error) {
-    console.error("❌ Get public articles error:", error);
+    console.error("Error fetching articles by category:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to retrieve articles",
+      message: "Gagal mengambil artikel kategori",
       error: error.message,
-      debug: {
-        stack: error.stack,
-        sql: error.sql,
-        sqlMessage: error.sqlMessage,
-        code: error.code,
-      },
     });
   }
 });
 
-// GET /api/public/articles/categories - Simple version
-router.get("/categories", async (req, res) => {
+// ============================================================================
+// GET ARTICLE DETAIL BY SLUG
+// ============================================================================
+
+router.get("/:slug", async (req, res) => {
   try {
-    console.log("🔍 Fetching categories...");
+    const { slug } = req.params;
 
-    // Simple query without complex JOINs first
-    const [categories] = await pool.execute(`
-      SELECT id, nama_kategori, slug, deskripsi, warna, created_at, updated_at
-      FROM categories 
-      ORDER BY nama_kategori ASC
-    `);
+    const [articles] = await pool.execute(
+      `
+      SELECT 
+        a.*,
+        c.id as kategori_id,
+        c.nama_kategori,
+        c.slug as kategori_slug,
+        c.warna as kategori_warna,
+        c.deskripsi as kategori_deskripsi
+      FROM articles a
+      LEFT JOIN categories c ON a.kategori_id = c.id
+      WHERE a.slug = ? AND a.is_published = 1
+    `,
+      [slug]
+    );
 
-    console.log(`✅ Found ${categories.length} categories`);
-
-    // Manually count articles for each category (avoid JOIN issues)
-    const categoriesWithCount = [];
-
-    for (const category of categories) {
-      try {
-        const [countResult] = await pool.execute(
-          "SELECT COUNT(*) as total FROM articles WHERE kategori_id = ? AND is_published = 1",
-          [category.id]
-        );
-
-        categoriesWithCount.push({
-          ...category,
-          total_artikel: countResult[0].total,
-        });
-      } catch (countError) {
-        console.warn(
-          `⚠️ Count error for category ${category.id}:`,
-          countError.message
-        );
-        categoriesWithCount.push({
-          ...category,
-          total_artikel: 0,
-        });
-      }
+    if (articles.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Artikel tidak ditemukan",
+      });
     }
 
-    res.json({
-      success: true,
-      message: "Categories retrieved successfully",
-      data: { categories: categoriesWithCount },
-    });
-  } catch (error) {
-    console.error("❌ Get categories error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve categories",
-      error: error.message,
-    });
-  }
-});
+    const article = articles[0];
 
-// GET /api/public/articles/featured - Simple version
-router.get("/featured", async (req, res) => {
-  try {
-    console.log("🔍 Fetching featured articles...");
-
-    // Simple query without LIMIT first
-    const [allFeatured] = await pool.execute(`
-      SELECT a.*, k.nama_kategori, k.slug as slug_kategori, k.warna as warna_kategori
-      FROM articles a 
-      LEFT JOIN categories k ON a.kategori_id = k.id 
-      WHERE a.is_published = 1 AND a.is_featured = 1
+    // Get related articles (same category, exclude current)
+    const [relatedArticles] = await pool.execute(
+      `
+      SELECT 
+        a.id,
+        a.judul,
+        a.slug,
+        a.konten_singkat,
+        a.gambar_utama,
+        a.penulis,
+        a.tanggal_publish,
+        a.views,
+        c.nama_kategori,
+        c.slug as kategori_slug,
+        c.warna as kategori_warna
+      FROM articles a
+      LEFT JOIN categories c ON a.kategori_id = c.id
+      WHERE a.kategori_id = ? 
+        AND a.id != ? 
+        AND a.is_published = 1
       ORDER BY a.tanggal_publish DESC
-    `);
-
-    console.log(`✅ Found ${allFeatured.length} featured articles`);
-
-    // Manual limit to 6
-    const { limit = "6" } = req.query;
-    const limitNum = Math.min(20, Math.max(1, parseInt(limit) || 6));
-    const featuredArticles = allFeatured.slice(0, limitNum);
-
-    const processedArticles = featuredArticles.map((article) => ({
-      ...article,
-      tags: article.tags
-        ? article.tags
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean)
-        : [],
-      is_published: Boolean(article.is_published),
-      is_featured: Boolean(article.is_featured),
-    }));
+      LIMIT 3
+    `,
+      [article.kategori_id, article.id]
+    );
 
     res.json({
       success: true,
-      message: "Featured articles retrieved successfully",
-      data: processedArticles,
-    });
-  } catch (error) {
-    console.error("❌ Get featured articles error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve featured articles",
-      error: error.message,
-    });
-  }
-});
-
-// Simple health check for this route
-router.get("/health", async (req, res) => {
-  try {
-    // Test basic database connection
-    const [result] = await pool.execute("SELECT 1 as test");
-
-    // Test if articles table exists
-    const [tables] = await pool.execute("SHOW TABLES LIKE 'articles'");
-
-    res.json({
-      success: true,
-      message: "Articles API health check",
       data: {
-        database_connected: true,
-        articles_table_exists: tables.length > 0,
-        test_result: result[0].test,
+        article: article,
+        related: relatedArticles,
       },
     });
   } catch (error) {
+    console.error("Error fetching article detail:", error);
     res.status(500).json({
       success: false,
-      message: "Articles API health check failed",
+      message: "Gagal mengambil detail artikel",
+      error: error.message,
+    });
+  }
+});
+
+// ============================================================================
+// INCREMENT ARTICLE VIEWS
+// ============================================================================
+
+router.patch("/:slug/view", async (req, res) => {
+  try {
+    const { slug } = req.params;
+
+    // Check if article exists and is published
+    const [articles] = await pool.execute(
+      "SELECT id, views FROM articles WHERE slug = ? AND is_published = 1",
+      [slug]
+    );
+
+    if (articles.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Artikel tidak ditemukan",
+      });
+    }
+
+    // Increment views
+    await pool.execute("UPDATE articles SET views = views + 1 WHERE slug = ?", [
+      slug,
+    ]);
+
+    res.json({
+      success: true,
+      message: "Views berhasil ditambahkan",
+      data: {
+        views: articles[0].views + 1,
+      },
+    });
+  } catch (error) {
+    console.error("Error incrementing views:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal menambah views",
+      error: error.message,
+    });
+  }
+});
+
+// ============================================================================
+// GET LATEST ARTICLES
+// ============================================================================
+
+router.get("/latest/posts", async (req, res) => {
+  try {
+    const { limit = 5 } = req.query;
+
+    const [articles] = await pool.execute(
+      `
+      SELECT 
+        a.id,
+        a.judul,
+        a.slug,
+        a.konten_singkat,
+        a.gambar_utama,
+        a.penulis,
+        a.tanggal_publish,
+        a.views,
+        c.nama_kategori,
+        c.slug as kategori_slug,
+        c.warna as kategori_warna
+      FROM articles a
+      LEFT JOIN categories c ON a.kategori_id = c.id
+      WHERE a.is_published = 1
+      ORDER BY a.tanggal_publish DESC
+      LIMIT ?
+    `,
+      [parseInt(limit)]
+    );
+
+    res.json({
+      success: true,
+      data: articles,
+    });
+  } catch (error) {
+    console.error("Error fetching latest articles:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal mengambil artikel terbaru",
+      error: error.message,
+    });
+  }
+});
+
+// ============================================================================
+// GET POPULAR ARTICLES (Most Viewed)
+// ============================================================================
+
+router.get("/popular/posts", async (req, res) => {
+  try {
+    const { limit = 5 } = req.query;
+
+    const [articles] = await pool.execute(
+      `
+      SELECT 
+        a.id,
+        a.judul,
+        a.slug,
+        a.konten_singkat,
+        a.gambar_utama,
+        a.penulis,
+        a.tanggal_publish,
+        a.views,
+        c.nama_kategori,
+        c.slug as kategori_slug,
+        c.warna as kategori_warna
+      FROM articles a
+      LEFT JOIN categories c ON a.kategori_id = c.id
+      WHERE a.is_published = 1
+      ORDER BY a.views DESC
+      LIMIT ?
+    `,
+      [parseInt(limit)]
+    );
+
+    res.json({
+      success: true,
+      data: articles,
+    });
+  } catch (error) {
+    console.error("Error fetching popular articles:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal mengambil artikel populer",
+      error: error.message,
+    });
+  }
+});
+
+// ============================================================================
+// SEARCH ARTICLES BY TAG
+// ============================================================================
+
+router.get("/search/tags", async (req, res) => {
+  try {
+    const { tag, page = 1, limit = 12 } = req.query;
+
+    if (!tag) {
+      return res.status(400).json({
+        success: false,
+        message: "Tag parameter diperlukan",
+      });
+    }
+
+    const offset = (page - 1) * limit;
+
+    // Get total count
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total 
+       FROM articles 
+       WHERE is_published = 1 AND tags LIKE ?`,
+      [`%${tag}%`]
+    );
+    const total = countResult[0].total;
+
+    // Get articles
+    const [articles] = await pool.execute(
+      `
+      SELECT 
+        a.id,
+        a.judul,
+        a.slug,
+        a.konten_singkat,
+        a.gambar_utama,
+        a.penulis,
+        a.tanggal_publish,
+        a.is_featured,
+        a.views,
+        a.tags,
+        c.id as kategori_id,
+        c.nama_kategori,
+        c.slug as kategori_slug,
+        c.warna as kategori_warna
+      FROM articles a
+      LEFT JOIN categories c ON a.kategori_id = c.id
+      WHERE a.is_published = 1 AND a.tags LIKE ?
+      ORDER BY a.tanggal_publish DESC
+      LIMIT ? OFFSET ?
+    `,
+      [`%${tag}%`, parseInt(limit), offset]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        tag: tag,
+        articles: articles,
+      },
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error("Error searching articles by tag:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal mencari artikel berdasarkan tag",
+      error: error.message,
+    });
+  }
+});
+
+// ============================================================================
+// GET ALL CATEGORIES
+// ============================================================================
+
+router.get("/categories/all", async (req, res) => {
+  try {
+    const [categories] = await pool.execute(
+      `
+      SELECT 
+        c.id,
+        c.nama_kategori,
+        c.slug,
+        c.deskripsi,
+        c.warna,
+        COUNT(a.id) as article_count
+      FROM categories c
+      LEFT JOIN articles a ON c.id = a.kategori_id AND a.is_published = 1
+      GROUP BY c.id, c.nama_kategori, c.slug, c.deskripsi, c.warna
+      ORDER BY c.nama_kategori ASC
+    `
+    );
+
+    res.json({
+      success: true,
+      data: categories,
+    });
+  } catch (error) {
+    console.error("Error fetching categories:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal mengambil data kategori",
       error: error.message,
     });
   }

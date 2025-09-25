@@ -1,192 +1,295 @@
+// src/routes/admin/article.js
 const express = require("express");
 const router = express.Router();
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs").promises;
 const { pool } = require("../../config/database");
 const { authenticateToken, requireAdmin } = require("../../middleware/auth");
-const { body, validationResult } = require("express-validator");
 
 // ============================================================================
-// ADMIN ARTIKEL MANAGEMENT ROUTES
+// MULTER CONFIGURATION - Image Upload for Articles
 // ============================================================================
 
-// GET /api/admin/articles - List all articles with filters
-router.get("/", authenticateToken, requireAdmin, async (req, res) => {
+const storage = multer.diskStorage({
+  destination: async (req, file, cb) => {
+    const uploadPath = path.join(__dirname, "../../../uploads/articles");
+    try {
+      await fs.mkdir(uploadPath, { recursive: true });
+      cb(null, uploadPath);
+    } catch (error) {
+      cb(error);
+    }
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    const ext = path.extname(file.originalname);
+    cb(null, `article-${uniqueSuffix}${ext}`);
+  },
+});
+
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(
+      new Error("Format gambar tidak valid. Gunakan PNG, JPG, JPEG, atau WEBP"),
+      false
+    );
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB
+  },
+  fileFilter: fileFilter,
+});
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// Generate slug from title
+function generateSlug(text) {
+  return text
+    .toString()
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-") // Replace spaces with -
+    .replace(/[^\w\-]+/g, "") // Remove all non-word chars
+    .replace(/\-\-+/g, "-") // Replace multiple - with single -
+    .replace(/^-+/, "") // Trim - from start
+    .replace(/-+$/, ""); // Trim - from end
+}
+
+// Check if slug exists (for duplicate detection)
+async function checkSlugExists(slug, excludeId = null) {
+  const query = excludeId
+    ? "SELECT COUNT(*) as count FROM articles WHERE slug = ? AND id != ?"
+    : "SELECT COUNT(*) as count FROM articles WHERE slug = ?";
+  const params = excludeId ? [slug, excludeId] : [slug];
+
+  const [result] = await pool.execute(query, params);
+  return result[0].count > 0;
+}
+
+// Delete image file
+async function deleteImageFile(filename) {
+  if (!filename) return;
   try {
-    const { page = 1, limit = 10, search, kategori, is_published, is_featured, sort = "created_at", order = "desc" } = req.query;
+    const filePath = path.join(
+      __dirname,
+      "../../../uploads/articles",
+      filename
+    );
+    await fs.unlink(filePath);
+    console.log(`Deleted image: ${filename}`);
+  } catch (error) {
+    console.error(`Error deleting image ${filename}:`, error);
+  }
+}
 
-    const offset = (page - 1) * limit;
+// ============================================================================
+// STATISTICS ENDPOINT
+// ============================================================================
 
-    let query = `
-      SELECT a.*, k.nama_kategori, k.slug as slug_kategori, k.warna as warna_kategori
-      FROM articles a 
-      LEFT JOIN categories k ON a.kategori_id = k.id 
-      WHERE 1=1
-    `;
-    const params = [];
+router.get("/statistics", authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    // Total articles
+    const [totalResult] = await pool.execute(
+      "SELECT COUNT(*) as total FROM articles"
+    );
 
-    // Apply filters
-    if (search) {
-      query += " AND (a.judul LIKE ? OR a.konten_singkat LIKE ? OR a.penulis LIKE ?)";
-      const searchTerm = `%${search}%`;
-      params.push(searchTerm, searchTerm, searchTerm);
-    }
+    // By status
+    const [statusResult] = await pool.execute(`
+      SELECT 
+        SUM(CASE WHEN is_published = 1 THEN 1 ELSE 0 END) as published,
+        SUM(CASE WHEN is_published = 0 THEN 1 ELSE 0 END) as draft,
+        SUM(CASE WHEN is_featured = 1 THEN 1 ELSE 0 END) as featured
+      FROM articles
+    `);
 
-    if (kategori) {
-      query += " AND a.kategori_id = ?";
-      params.push(kategori);
-    }
+    // By category
+    const [categoryResult] = await pool.execute(`
+      SELECT 
+        c.nama_kategori,
+        c.slug,
+        c.warna,
+        COUNT(a.id) as count
+      FROM categories c
+      LEFT JOIN articles a ON c.id = a.kategori_id
+      GROUP BY c.id, c.nama_kategori, c.slug, c.warna
+      ORDER BY count DESC
+    `);
 
-    if (is_published !== undefined) {
-      query += " AND a.is_published = ?";
-      params.push(is_published);
-    }
+    // Recent articles (last 7 days)
+    const [recentResult] = await pool.execute(`
+      SELECT COUNT(*) as count 
+      FROM articles 
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+    `);
 
-    if (is_featured !== undefined) {
-      query += " AND a.is_featured = ?";
-      params.push(is_featured);
-    }
-
-    // Sorting
-    const allowedSorts = ["created_at", "updated_at", "judul", "tanggal_publish", "views"];
-    const sortField = allowedSorts.includes(sort) ? sort : "created_at";
-    const sortOrder = order.toLowerCase() === "asc" ? "ASC" : "DESC";
-
-    query += ` ORDER BY a.${sortField} ${sortOrder} LIMIT ? OFFSET ?`;
-    params.push(parseInt(limit), parseInt(offset));
-
-    const [articles] = await pool.execute(query, params);
-
-    // Count total for pagination
-    let countQuery = `
-      SELECT COUNT(*) as total 
-      FROM articles a 
-      LEFT JOIN categories k ON a.kategori_id = k.id 
-      WHERE 1=1
-    `;
-    const countParams = [];
-
-    if (search) {
-      countQuery += " AND (a.judul LIKE ? OR a.konten_singkat LIKE ? OR a.penulis LIKE ?)";
-      const searchTerm = `%${search}%`;
-      countParams.push(searchTerm, searchTerm, searchTerm);
-    }
-
-    if (kategori) {
-      countQuery += " AND a.kategori_id = ?";
-      countParams.push(kategori);
-    }
-
-    if (is_published !== undefined) {
-      countQuery += " AND a.is_published = ?";
-      countParams.push(is_published);
-    }
-
-    if (is_featured !== undefined) {
-      countQuery += " AND a.is_featured = ?";
-      countParams.push(is_featured);
-    }
-
-    const [countResult] = await pool.execute(countQuery, countParams);
-    const total = countResult[0].total;
+    // Most viewed articles
+    const [topViewedResult] = await pool.execute(`
+      SELECT judul, views, slug
+      FROM articles
+      ORDER BY views DESC
+      LIMIT 5
+    `);
 
     res.json({
       success: true,
-      message: "Articles retrieved successfully",
-      data: articles,
-      pagination: {
-        current_page: parseInt(page),
-        per_page: parseInt(limit),
-        total_pages: Math.ceil(total / limit),
-        total_articles: total,
-        has_next: page * limit < total,
-        has_prev: page > 1,
+      data: {
+        total: totalResult[0].total,
+        published: statusResult[0].published || 0,
+        draft: statusResult[0].draft || 0,
+        featured: statusResult[0].featured || 0,
+        byCategory: categoryResult,
+        recentWeek: recentResult[0].count,
+        topViewed: topViewedResult,
       },
     });
   } catch (error) {
-    console.error("Get articles error:", error);
+    console.error("Error fetching statistics:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to retrieve articles",
+      message: "Gagal mengambil statistik",
       error: error.message,
     });
   }
 });
 
-// POST /api/admin/articles - Create new article
-router.post(
-  "/",
-  authenticateToken,
-  requireAdmin,
-  [
-    body("judul").notEmpty().withMessage("Judul artikel harus diisi"),
-    body("slug").notEmpty().withMessage("Slug artikel harus diisi"),
-    body("konten_lengkap").notEmpty().withMessage("Konten lengkap harus diisi"),
-    body("kategori_id").optional().isInt({ min: 1 }).withMessage("Kategori ID harus berupa angka positif"),
-    body("is_published").optional().isBoolean().withMessage("Status publish harus berupa boolean"),
-    body("is_featured").optional().isBoolean().withMessage("Status featured harus berupa boolean"),
-    body("tanggal_publish").optional().isDate().withMessage("Tanggal publish harus berupa tanggal valid"),
-  ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          message: "Data tidak valid",
-          errors: errors.array(),
-        });
-      }
+// ============================================================================
+// GET ALL ARTICLES - With Pagination, Search, and Filters
+// ============================================================================
 
-      const { judul, slug, konten_singkat, konten_lengkap, gambar_utama, kategori_id, penulis, is_published = 0, tanggal_publish, is_featured = 0, meta_description, tags } = req.body;
+router.get("/", authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      search = "",
+      kategori_id = "",
+      is_published = "",
+      is_featured = "",
+      sort = "created_at",
+      order = "DESC",
+    } = req.query;
 
-      // Check if slug already exists
-      const [existingSlug] = await pool.execute("SELECT id FROM articles WHERE slug = ?", [slug]);
+    const offset = (page - 1) * limit;
 
-      if (existingSlug.length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Slug artikel sudah digunakan",
-        });
-      }
+    // Build WHERE clause
+    let whereClause = "WHERE 1=1";
+    const params = [];
 
-      const [result] = await pool.execute(
-        `INSERT INTO articles (
-          judul, slug, konten_singkat, konten_lengkap, gambar_utama,
-          kategori_id, penulis, is_published, tanggal_publish, is_featured,
-          meta_description, tags, views
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-        [judul, slug, konten_singkat, konten_lengkap, gambar_utama, kategori_id || null, penulis, is_published ? 1 : 0, tanggal_publish || null, is_featured ? 1 : 0, meta_description, tags]
-      );
-
-      res.json({
-        success: true,
-        message: "Artikel berhasil dibuat",
-        data: {
-          id: result.insertId,
-          slug: slug,
-        },
-      });
-    } catch (error) {
-      console.error("Create article error:", error);
-      res.status(500).json({
-        success: false,
-        message: "Gagal membuat artikel",
-        error: error.message,
-      });
+    // Search by title, content, or tags
+    if (search) {
+      whereClause +=
+        " AND (a.judul LIKE ? OR a.konten_singkat LIKE ? OR a.konten_lengkap LIKE ? OR a.tags LIKE ?)";
+      const searchPattern = `%${search}%`;
+      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
     }
-  }
-);
 
-// GET /api/admin/articles/:id - Get single article
+    // Filter by category
+    if (kategori_id) {
+      whereClause += " AND a.kategori_id = ?";
+      params.push(kategori_id);
+    }
+
+    // Filter by published status
+    if (is_published !== "") {
+      whereClause += " AND a.is_published = ?";
+      params.push(is_published);
+    }
+
+    // Filter by featured status
+    if (is_featured !== "") {
+      whereClause += " AND a.is_featured = ?";
+      params.push(is_featured);
+    }
+
+    // Get total count
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM articles a ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+
+    // Validate sort column
+    const allowedSortColumns = [
+      "created_at",
+      "updated_at",
+      "judul",
+      "views",
+      "tanggal_publish",
+    ];
+    const sortColumn = allowedSortColumns.includes(sort) ? sort : "created_at";
+    const sortOrder = order.toUpperCase() === "ASC" ? "ASC" : "DESC";
+
+    // Get paginated data
+    const query = `
+      SELECT 
+        a.*,
+        c.nama_kategori,
+        c.slug as kategori_slug,
+        c.warna as kategori_warna
+      FROM articles a
+      LEFT JOIN categories c ON a.kategori_id = c.id
+      ${whereClause}
+      ORDER BY a.${sortColumn} ${sortOrder}
+      LIMIT ? OFFSET ?
+    `;
+
+    const [articles] = await pool.execute(query, [
+      ...params,
+      parseInt(limit),
+      offset,
+    ]);
+
+    res.json({
+      success: true,
+      data: articles,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching articles:", error);
+    res.status(500).json({
+      success: false,
+      message: "Gagal mengambil data artikel",
+      error: error.message,
+    });
+  }
+});
+
+// ============================================================================
+// GET SINGLE ARTICLE BY ID
+// ============================================================================
+
 router.get("/:id", authenticateToken, requireAdmin, async (req, res) => {
   try {
+    const { id } = req.params;
+
     const [articles] = await pool.execute(
       `
-      SELECT a.*, k.nama_kategori, k.slug as slug_kategori, k.warna as warna_kategori
-      FROM articles a 
-      LEFT JOIN categories k ON a.kategori_id = k.id 
+      SELECT 
+        a.*,
+        c.nama_kategori,
+        c.slug as kategori_slug,
+        c.warna as kategori_warna,
+        c.deskripsi as kategori_deskripsi
+      FROM articles a
+      LEFT JOIN categories c ON a.kategori_id = c.id
       WHERE a.id = ?
     `,
-      [req.params.id]
+      [id]
     );
 
     if (articles.length === 0) {
@@ -198,90 +301,305 @@ router.get("/:id", authenticateToken, requireAdmin, async (req, res) => {
 
     res.json({
       success: true,
-      message: "Article retrieved successfully",
       data: articles[0],
     });
   } catch (error) {
-    console.error("Get article error:", error);
+    console.error("Error fetching article:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to retrieve article",
+      message: "Gagal mengambil detail artikel",
       error: error.message,
     });
   }
 });
 
-// PUT /api/admin/articles/:id - Update article
-router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { judul, slug, konten_singkat, konten_lengkap, gambar_utama, kategori_id, penulis, is_published, tanggal_publish, is_featured, meta_description, tags } = req.body;
+// ============================================================================
+// CREATE NEW ARTICLE - With Image Upload
+// ============================================================================
 
-    // Check if article exists
-    const [existing] = await pool.execute("SELECT id FROM articles WHERE id = ?", [id]);
-    if (existing.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Artikel tidak ditemukan",
-      });
-    }
+router.post(
+  "/",
+  authenticateToken,
+  requireAdmin,
+  upload.single("gambar_utama"),
+  async (req, res) => {
+    try {
+      const {
+        judul,
+        slug: customSlug,
+        konten_singkat,
+        konten_lengkap,
+        kategori_id,
+        penulis,
+        is_published = 0,
+        tanggal_publish,
+        is_featured = 0,
+        meta_description,
+        tags,
+      } = req.body;
 
-    // Check if slug is taken by another article
-    if (slug) {
-      const [existingSlug] = await pool.execute("SELECT id FROM articles WHERE slug = ? AND id != ?", [slug, id]);
-
-      if (existingSlug.length > 0) {
+      // Validation
+      if (!judul || !konten_lengkap || !kategori_id || !penulis) {
+        // Delete uploaded file if validation fails
+        if (req.file) {
+          await deleteImageFile(req.file.filename);
+        }
         return res.status(400).json({
           success: false,
-          message: "Slug artikel sudah digunakan",
+          message: "Judul, konten lengkap, kategori, dan penulis wajib diisi",
         });
       }
+
+      // Generate or use custom slug
+      let slug = customSlug ? generateSlug(customSlug) : generateSlug(judul);
+
+      // Check for duplicate slug
+      const slugExists = await checkSlugExists(slug);
+      if (slugExists) {
+        // Add timestamp to make slug unique
+        slug = `${slug}-${Date.now()}`;
+      }
+
+      // Check if category exists
+      const [categoryCheck] = await pool.execute(
+        "SELECT id FROM categories WHERE id = ?",
+        [kategori_id]
+      );
+
+      if (categoryCheck.length === 0) {
+        if (req.file) {
+          await deleteImageFile(req.file.filename);
+        }
+        return res.status(400).json({
+          success: false,
+          message: "Kategori tidak ditemukan",
+        });
+      }
+
+      // Get uploaded image filename
+      const gambar_utama = req.file ? req.file.filename : null;
+
+      // Insert article
+      const [result] = await pool.execute(
+        `
+        INSERT INTO articles (
+          judul, slug, konten_singkat, konten_lengkap, gambar_utama,
+          kategori_id, penulis, is_published, tanggal_publish,
+          is_featured, meta_description, tags, views, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())
+      `,
+        [
+          judul,
+          slug,
+          konten_singkat || null,
+          konten_lengkap,
+          gambar_utama,
+          kategori_id,
+          penulis,
+          is_published,
+          tanggal_publish || null,
+          is_featured,
+          meta_description || null,
+          tags || null,
+        ]
+      );
+
+      res.status(201).json({
+        success: true,
+        message: "Artikel berhasil dibuat",
+        data: {
+          id: result.insertId,
+          slug: slug,
+          gambar_utama: gambar_utama,
+        },
+      });
+    } catch (error) {
+      // Delete uploaded file if error occurs
+      if (req.file) {
+        await deleteImageFile(req.file.filename);
+      }
+
+      console.error("Error creating article:", error);
+      res.status(500).json({
+        success: false,
+        message: "Gagal membuat artikel",
+        error: error.message,
+      });
     }
-
-    const [result] = await pool.execute(
-      `UPDATE articles SET 
-        judul = ?, slug = ?, konten_singkat = ?, konten_lengkap = ?,
-        gambar_utama = ?, kategori_id = ?, penulis = ?, is_published = ?,
-        tanggal_publish = ?, is_featured = ?, meta_description = ?, tags = ?,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?`,
-      [judul, slug, konten_singkat, konten_lengkap, gambar_utama, kategori_id || null, penulis, is_published ? 1 : 0, tanggal_publish || null, is_featured ? 1 : 0, meta_description, tags, id]
-    );
-
-    res.json({
-      success: true,
-      message: "Artikel berhasil diupdate",
-    });
-  } catch (error) {
-    console.error("Update article error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Gagal mengupdate artikel",
-      error: error.message,
-    });
   }
-});
+);
 
-// DELETE /api/admin/articles/:id - Delete article
+// ============================================================================
+// UPDATE ARTICLE - With Optional Image Upload
+// ============================================================================
+
+router.put(
+  "/:id",
+  authenticateToken,
+  requireAdmin,
+  upload.single("gambar_utama"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const {
+        judul,
+        slug: customSlug,
+        konten_singkat,
+        konten_lengkap,
+        kategori_id,
+        penulis,
+        is_published,
+        tanggal_publish,
+        is_featured,
+        meta_description,
+        tags,
+      } = req.body;
+
+      // Check if article exists
+      const [existingArticle] = await pool.execute(
+        "SELECT * FROM articles WHERE id = ?",
+        [id]
+      );
+
+      if (existingArticle.length === 0) {
+        if (req.file) {
+          await deleteImageFile(req.file.filename);
+        }
+        return res.status(404).json({
+          success: false,
+          message: "Artikel tidak ditemukan",
+        });
+      }
+
+      // Generate slug if title changed
+      let slug = existingArticle[0].slug;
+      if (judul && judul !== existingArticle[0].judul) {
+        slug = customSlug ? generateSlug(customSlug) : generateSlug(judul);
+
+        // Check for duplicate slug (excluding current article)
+        const slugExists = await checkSlugExists(slug, id);
+        if (slugExists) {
+          slug = `${slug}-${Date.now()}`;
+        }
+      }
+
+      // Handle image update
+      let gambar_utama = existingArticle[0].gambar_utama;
+      if (req.file) {
+        // Delete old image if exists
+        if (existingArticle[0].gambar_utama) {
+          await deleteImageFile(existingArticle[0].gambar_utama);
+        }
+        gambar_utama = req.file.filename;
+      }
+
+      // Update article
+      await pool.execute(
+        `
+        UPDATE articles SET
+          judul = ?,
+          slug = ?,
+          konten_singkat = ?,
+          konten_lengkap = ?,
+          gambar_utama = ?,
+          kategori_id = ?,
+          penulis = ?,
+          is_published = ?,
+          tanggal_publish = ?,
+          is_featured = ?,
+          meta_description = ?,
+          tags = ?,
+          updated_at = NOW()
+        WHERE id = ?
+      `,
+        [
+          judul || existingArticle[0].judul,
+          slug,
+          konten_singkat !== undefined
+            ? konten_singkat
+            : existingArticle[0].konten_singkat,
+          konten_lengkap || existingArticle[0].konten_lengkap,
+          gambar_utama,
+          kategori_id || existingArticle[0].kategori_id,
+          penulis || existingArticle[0].penulis,
+          is_published !== undefined
+            ? is_published
+            : existingArticle[0].is_published,
+          tanggal_publish !== undefined
+            ? tanggal_publish
+            : existingArticle[0].tanggal_publish,
+          is_featured !== undefined
+            ? is_featured
+            : existingArticle[0].is_featured,
+          meta_description !== undefined
+            ? meta_description
+            : existingArticle[0].meta_description,
+          tags !== undefined ? tags : existingArticle[0].tags,
+          id,
+        ]
+      );
+
+      res.json({
+        success: true,
+        message: "Artikel berhasil diupdate",
+        data: {
+          id: id,
+          slug: slug,
+          gambar_utama: gambar_utama,
+        },
+      });
+    } catch (error) {
+      if (req.file) {
+        await deleteImageFile(req.file.filename);
+      }
+
+      console.error("Error updating article:", error);
+      res.status(500).json({
+        success: false,
+        message: "Gagal update artikel",
+        error: error.message,
+      });
+    }
+  }
+);
+
+// ============================================================================
+// DELETE ARTICLE - Also Delete Image
+// ============================================================================
+
 router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [result] = await pool.execute("DELETE FROM articles WHERE id = ?", [id]);
+    // Get article data
+    const [articles] = await pool.execute(
+      "SELECT * FROM articles WHERE id = ?",
+      [id]
+    );
 
-    if (result.affectedRows === 0) {
+    if (articles.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Artikel tidak ditemukan",
       });
     }
+
+    const article = articles[0];
+
+    // Delete image file if exists
+    if (article.gambar_utama) {
+      await deleteImageFile(article.gambar_utama);
+    }
+
+    // Delete article from database
+    await pool.execute("DELETE FROM articles WHERE id = ?", [id]);
 
     res.json({
       success: true,
       message: "Artikel berhasil dihapus",
     });
   } catch (error) {
-    console.error("Delete article error:", error);
+    console.error("Error deleting article:", error);
     res.status(500).json({
       success: false,
       message: "Gagal menghapus artikel",
@@ -290,135 +608,147 @@ router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
-// POST /api/admin/articles/:id/publish - Publish/unpublish article
-router.post("/:id/publish", authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { is_published } = req.body;
+// ============================================================================
+// TOGGLE PUBLISH STATUS
+// ============================================================================
 
-    const [result] = await pool.execute("UPDATE articles SET is_published = ?, tanggal_publish = ? WHERE id = ?", [is_published ? 1 : 0, is_published ? new Date() : null, id]);
+router.patch(
+  "/:id/publish",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({
+      // Get current status
+      const [articles] = await pool.execute(
+        "SELECT is_published FROM articles WHERE id = ?",
+        [id]
+      );
+
+      if (articles.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Artikel tidak ditemukan",
+        });
+      }
+
+      const newStatus = articles[0].is_published === 1 ? 0 : 1;
+
+      // Update status
+      await pool.execute(
+        `
+        UPDATE articles 
+        SET is_published = ?,
+            tanggal_publish = IF(? = 1 AND tanggal_publish IS NULL, NOW(), tanggal_publish),
+            updated_at = NOW()
+        WHERE id = ?
+      `,
+        [newStatus, newStatus, id]
+      );
+
+      res.json({
+        success: true,
+        message: `Artikel berhasil ${
+          newStatus === 1 ? "dipublikasi" : "dijadikan draft"
+        }`,
+        data: {
+          is_published: newStatus,
+        },
+      });
+    } catch (error) {
+      console.error("Error toggling publish status:", error);
+      res.status(500).json({
         success: false,
-        message: "Artikel tidak ditemukan",
+        message: "Gagal mengubah status publish",
+        error: error.message,
       });
     }
-
-    res.json({
-      success: true,
-      message: is_published ? "Artikel berhasil dipublish" : "Artikel berhasil di-unpublish",
-    });
-  } catch (error) {
-    console.error("Publish article error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Gagal mengubah status publish artikel",
-      error: error.message,
-    });
   }
-});
+);
 
-// POST /api/admin/articles/:id/feature - Feature/unfeature article
-router.post("/:id/feature", authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { is_featured } = req.body;
+// ============================================================================
+// TOGGLE FEATURED STATUS
+// ============================================================================
 
-    const [result] = await pool.execute("UPDATE articles SET is_featured = ? WHERE id = ?", [is_featured ? 1 : 0, id]);
+router.patch(
+  "/:id/feature",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({
+      // Get current status
+      const [articles] = await pool.execute(
+        "SELECT is_featured FROM articles WHERE id = ?",
+        [id]
+      );
+
+      if (articles.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Artikel tidak ditemukan",
+        });
+      }
+
+      const newStatus = articles[0].is_featured === 1 ? 0 : 1;
+
+      // Update status
+      await pool.execute(
+        "UPDATE articles SET is_featured = ?, updated_at = NOW() WHERE id = ?",
+        [newStatus, id]
+      );
+
+      res.json({
+        success: true,
+        message: `Artikel berhasil ${
+          newStatus === 1 ? "dijadikan unggulan" : "dihapus dari unggulan"
+        }`,
+        data: {
+          is_featured: newStatus,
+        },
+      });
+    } catch (error) {
+      console.error("Error toggling featured status:", error);
+      res.status(500).json({
         success: false,
-        message: "Artikel tidak ditemukan",
+        message: "Gagal mengubah status unggulan",
+        error: error.message,
       });
     }
-
-    res.json({
-      success: true,
-      message: is_featured ? "Artikel berhasil di-feature" : "Artikel berhasil di-unfeature",
-    });
-  } catch (error) {
-    console.error("Feature article error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Gagal mengubah status feature artikel",
-      error: error.message,
-    });
   }
-});
+);
 
-// GET /api/admin/articles/categories - Get all categories
-router.get("/manage/categories", authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const [categories] = await pool.execute(`
-      SELECT k.*, 
-        (SELECT COUNT(*) FROM articles WHERE kategori_id = k.id AND is_published = 1) as total_artikel
-      FROM categories k 
-      ORDER BY k.nama_kategori ASC
-    `);
+// ============================================================================
+// GET CATEGORIES FOR ARTICLE FORM
+// ============================================================================
 
-    res.json({
-      success: true,
-      message: "Categories retrieved successfully",
-      data: { categories },
-    });
-  } catch (error) {
-    console.error("Get categories error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve categories",
-      error: error.message,
-    });
+router.get(
+  "/manage/categories",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const [categories] = await pool.execute(
+        "SELECT id, nama_kategori, slug, deskripsi, warna FROM categories ORDER BY nama_kategori ASC"
+      );
+
+      res.json({
+        success: true,
+        data: {
+          categories: categories,
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching categories:", error);
+      res.status(500).json({
+        success: false,
+        message: "Gagal mengambil data kategori",
+        error: error.message,
+      });
+    }
   }
-});
-
-// GET /api/admin/articles/stats - Get article statistics
-router.get("/manage/stats", authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const [stats] = await pool.execute(`
-      SELECT 
-        COUNT(*) as total_articles,
-        SUM(CASE WHEN is_published = 1 THEN 1 ELSE 0 END) as published_articles,
-        SUM(CASE WHEN is_published = 0 THEN 1 ELSE 0 END) as draft_articles,
-        SUM(CASE WHEN is_featured = 1 THEN 1 ELSE 0 END) as featured_articles,
-        SUM(views) as total_views,
-        AVG(views) as avg_views
-      FROM articles
-    `);
-
-    const [recent] = await pool.execute(`
-      SELECT id, judul, views, created_at, is_published
-      FROM articles 
-      ORDER BY created_at DESC 
-      LIMIT 5
-    `);
-
-    const [popular] = await pool.execute(`
-      SELECT id, judul, views, created_at, is_published
-      FROM articles 
-      WHERE is_published = 1
-      ORDER BY views DESC 
-      LIMIT 5
-    `);
-
-    res.json({
-      success: true,
-      message: "Article statistics retrieved successfully",
-      data: {
-        statistics: stats[0],
-        recent_articles: recent,
-        popular_articles: popular,
-      },
-    });
-  } catch (error) {
-    console.error("Get stats error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to retrieve statistics",
-      error: error.message,
-    });
-  }
-});
+);
 
 module.exports = router;
