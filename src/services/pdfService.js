@@ -3,7 +3,7 @@ const handlebars = require("handlebars");
 const QRCode = require("qrcode");
 const path = require("path");
 const fs = require("fs").promises;
-const { pool } = require("../config/database"); // Use your existing database connection
+const { pool } = require("../config/database");
 
 class PDFService {
   constructor() {
@@ -14,43 +14,35 @@ class PDFService {
 
   // Initialize custom Handlebars helpers
   initializeHandlebarsHelpers() {
-    // Register 'eq' helper for equality comparison
     handlebars.registerHelper("eq", function (a, b) {
       return a === b;
     });
 
-    // Register 'ne' helper for not equal comparison
     handlebars.registerHelper("ne", function (a, b) {
       return a !== b;
     });
 
-    // Register 'gt' helper for greater than
     handlebars.registerHelper("gt", function (a, b) {
       return a > b;
     });
 
-    // Register 'lt' helper for less than
     handlebars.registerHelper("lt", function (a, b) {
       return a < b;
     });
 
-    // Register 'and' helper for logical AND
     handlebars.registerHelper("and", function (a, b) {
       return a && b;
     });
 
-    // Register 'or' helper for logical OR
     handlebars.registerHelper("or", function (a, b) {
       return a || b;
     });
 
-    // Register 'formatCurrency' helper for currency formatting
     handlebars.registerHelper("formatCurrency", function (amount) {
       if (!amount) return "Rp 0";
       return "Rp " + Number(amount).toLocaleString("id-ID");
     });
 
-    // Register 'formatDate' helper for date formatting
     handlebars.registerHelper("formatDate", function (date, format) {
       if (!date) return "";
       const d = new Date(date);
@@ -65,19 +57,16 @@ class PDFService {
       return d.toLocaleDateString("id-ID");
     });
 
-    // Register 'capitalize' helper
     handlebars.registerHelper("capitalize", function (str) {
       if (!str) return "";
       return str.charAt(0).toUpperCase() + str.slice(1);
     });
 
-    // Register 'upper' helper
     handlebars.registerHelper("upper", function (str) {
       if (!str) return "";
       return str.toUpperCase();
     });
 
-    // Register 'lower' helper
     handlebars.registerHelper("lower", function (str) {
       if (!str) return "";
       return str.toLowerCase();
@@ -110,11 +99,7 @@ class PDFService {
     }
 
     try {
-      const templatePath = path.join(
-        __dirname,
-        "../templates/pdf", // Updated path to match your structure
-        `${templateName}.hbs`
-      );
+      const templatePath = path.join(__dirname, "../templates/pdf", `${templateName}.hbs`);
       const templateContent = await fs.readFile(templatePath, "utf-8");
       const template = handlebars.compile(templateContent);
 
@@ -122,12 +107,10 @@ class PDFService {
       return template;
     } catch (error) {
       console.error(`Template load error for ${templateName}:`, error);
-      // Fallback to default template if file not found
       return this.getDefaultTemplate(templateName);
     }
   }
 
-  // Default template fallback if .hbs file not found
   getDefaultTemplate(templateName) {
     if (templateName === "bukti-pendaftaran") {
       const defaultTemplate = `
@@ -314,7 +297,6 @@ class PDFService {
     }
   }
 
-  // NEW METHOD: Get SPMB data from your database structure
   async getSPMBDataForPDF(pendaftarId) {
     try {
       const [rows] = await pool.execute(
@@ -346,18 +328,15 @@ class PDFService {
     }
   }
 
-  // UPDATED: Generate PDF bukti pendaftaran with your data structure
   async generateBuktiPendaftaran(pendaftarId) {
     try {
       console.log(`Generating PDF for pendaftar ID: ${pendaftarId}`);
 
-      // Get data from your database
       const pendaftarData = await this.getSPMBDataForPDF(pendaftarId);
 
       const browser = await this.initBrowser();
       const page = await browser.newPage();
 
-      // Generate QR Code for verification
       const qrData = {
         no_pendaftaran: pendaftarData.no_pendaftaran,
         pin: pendaftarData.pin_login,
@@ -366,13 +345,9 @@ class PDFService {
       };
       const qrCodeDataUrl = await this.generateQRCode(qrData);
 
-      // Prepare template data with your field names
       const templateData = {
-        // Registration info
         no_pendaftaran: pendaftarData.no_pendaftaran,
         pin_login: pendaftarData.pin_login,
-
-        // Personal data
         nama_lengkap: pendaftarData.nama_lengkap,
         nisn: pendaftarData.nisn,
         nomor_whatsapp_aktif: pendaftarData.nomor_whatsapp_aktif,
@@ -380,56 +355,34 @@ class PDFService {
         jenis_kelamin: pendaftarData.jenis_kelamin,
         agama: pendaftarData.agama,
         alamat_siswa: pendaftarData.alamat_siswa,
-
-        // School data
         asal_sekolah: pendaftarData.asal_sekolah,
         tahun_lulus: pendaftarData.tahun_lulus,
-
-        // Parent data
         nama_orang_tua: pendaftarData.nama_orang_tua,
         pekerjaan_orang_tua: pendaftarData.pekerjaan_orang_tua,
-
-        // Program & payment
         nama_jurusan: pendaftarData.nama_jurusan,
         kode_jurusan: pendaftarData.kode_jurusan,
         nama_pembayaran: pendaftarData.nama_pembayaran,
         total_pembayaran: pendaftarData.total_pembayaran,
-
-        // School info
         school: {
           nama_sekolah: pendaftarData.school_name,
           alamat_lengkap: pendaftarData.school_address,
           telepon: pendaftarData.school_phone,
           email: pendaftarData.school_email,
-          logo_path: pendaftarData.school_logo
-            ? `/uploads/logos/${pendaftarData.school_logo}`
-            : null,
+          logo_path: pendaftarData.school_logo ? `/uploads/logos/${pendaftarData.school_logo}` : null,
           academic_year: pendaftarData.academic_year,
         },
-
-        // Formatted dates
-        formatted_tanggal_lahir: new Date(
-          pendaftarData.tanggal_lahir
-        ).toLocaleDateString("id-ID"),
-        formatted_tanggal_daftar: new Date(
-          pendaftarData.tanggal_daftar
-        ).toLocaleDateString("id-ID", {
+        formatted_tanggal_lahir: new Date(pendaftarData.tanggal_lahir).toLocaleDateString("id-ID"),
+        formatted_tanggal_daftar: new Date(pendaftarData.tanggal_daftar).toLocaleDateString("id-ID", {
           weekday: "long",
           year: "numeric",
           month: "long",
           day: "numeric",
         }),
-
-        // Status
         status_pendaftaran: pendaftarData.status_pendaftaran,
         status_text: this.getStatusText(pendaftarData.status_pendaftaran),
         status_color: this.getStatusColor(pendaftarData.status_pendaftaran),
         catatan_admin: pendaftarData.catatan_admin,
-
-        // QR Code
         qr_code: qrCodeDataUrl,
-
-        // Print date
         tanggal_cetak: new Date().toLocaleDateString("id-ID", {
           weekday: "long",
           year: "numeric",
@@ -438,17 +391,14 @@ class PDFService {
         }),
       };
 
-      // Load and compile template
       const template = await this.loadTemplate("bukti-pendaftaran");
       const htmlContent = template(templateData);
 
-      // Set page content
       await page.setContent(htmlContent, {
         waitUntil: "networkidle0",
         timeout: 30000,
       });
 
-      // Generate PDF with custom styling
       const pdfBuffer = await page.pdf({
         format: "A4",
         printBackground: true,
@@ -465,13 +415,9 @@ class PDFService {
 
       await page.close();
 
-      // Save PDF to storage
-      const fileName = `bukti-${
-        pendaftarData.no_pendaftaran
-      }-${Date.now()}.pdf`;
+      const fileName = `bukti-${pendaftarData.no_pendaftaran}-${Date.now()}.pdf`;
       const storagePath = path.join(__dirname, "../storage/pdf");
 
-      // Ensure directory exists
       try {
         await fs.mkdir(storagePath, { recursive: true });
       } catch (error) {
@@ -481,24 +427,15 @@ class PDFService {
       const filePath = path.join(storagePath, fileName);
       await fs.writeFile(filePath, pdfBuffer);
 
-      // Update database with PDF path (with error handling for missing column)
       try {
-        await pool.execute(
-          "UPDATE pendaftar_spmb SET bukti_pdf_path = ? WHERE id = ?",
-          [fileName, pendaftarId]
-        );
+        await pool.execute("UPDATE pendaftar_spmb SET bukti_pdf_path = ? WHERE id = ?", [fileName, pendaftarId]);
         console.log(`Database updated with PDF path: ${fileName}`);
       } catch (dbError) {
         if (dbError.code === "ER_BAD_FIELD_ERROR") {
-          console.warn(
-            "Warning: bukti_pdf_path column does not exist. PDF generated but path not stored in database."
-          );
-          console.warn(
-            "Please run: ALTER TABLE pendaftar_spmb ADD COLUMN bukti_pdf_path VARCHAR(255) NULL;"
-          );
+          console.warn("Warning: bukti_pdf_path column does not exist. PDF generated but path not stored in database.");
+          console.warn("Please run: ALTER TABLE pendaftar_spmb ADD COLUMN bukti_pdf_path VARCHAR(255) NULL;");
         } else {
           console.error("Database update error:", dbError);
-          // Don't throw here, PDF is still generated successfully
         }
       }
 
@@ -520,13 +457,9 @@ class PDFService {
     }
   }
 
-  // NEW METHOD: Generate PDF by nomor_pendaftaran (for public access)
   async generateBuktiPendaftaranByNomor(no_pendaftaran) {
     try {
-      const [rows] = await pool.execute(
-        "SELECT id FROM pendaftar_spmb WHERE no_pendaftaran = ?",
-        [no_pendaftaran]
-      );
+      const [rows] = await pool.execute("SELECT id FROM pendaftar_spmb WHERE no_pendaftaran = ?", [no_pendaftaran]);
 
       if (rows.length === 0) {
         throw new Error("Nomor pendaftaran tidak ditemukan");
@@ -539,12 +472,10 @@ class PDFService {
     }
   }
 
-  // NEW METHOD: Get PDF from storage
   async getPDFFromStorage(fileName) {
     try {
       const filePath = path.join(__dirname, "../storage/pdf", fileName);
 
-      // Check if file exists
       try {
         await fs.access(filePath);
       } catch (error) {
@@ -559,15 +490,41 @@ class PDFService {
     }
   }
 
-  // NEW METHOD: Check if PDF exists for pendaftar
+  /**
+   * ✅ NEW HELPER METHOD: Get absolute path to PDF file
+   * @param {string} fileName - Filename from database (e.g., "bukti-SMK202533506-1234567890.pdf")
+   * @returns {string} - Absolute path to PDF file
+   */
+  getPDFAbsolutePath(fileName) {
+    if (!fileName) {
+      throw new Error("Filename is required");
+    }
+
+    // Resolve to storage/pdf directory
+    return path.join(__dirname, "../storage/pdf", fileName);
+  }
+
+  /**
+   * ✅ NEW HELPER METHOD: Check if PDF file exists
+   * @param {string} fileName - Filename from database
+   * @returns {Promise<boolean>} - True if file exists
+   */
+  async pdfFileExists(fileName) {
+    if (!fileName) return false;
+
+    try {
+      const filePath = this.getPDFAbsolutePath(fileName);
+      await fs.access(filePath);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
   async checkPDFExists(pendaftarId) {
     try {
-      // First check if bukti_pdf_path column exists
       try {
-        const [rows] = await pool.execute(
-          "SELECT bukti_pdf_path FROM pendaftar_spmb WHERE id = ?",
-          [pendaftarId]
-        );
+        const [rows] = await pool.execute("SELECT bukti_pdf_path FROM pendaftar_spmb WHERE id = ?", [pendaftarId]);
 
         if (rows.length === 0) {
           return { exists: false, message: "Data pendaftar tidak ditemukan" };
@@ -578,7 +535,6 @@ class PDFService {
           return { exists: false, message: "PDF belum digenerate" };
         }
 
-        // Check if file actually exists in storage
         const filePath = path.join(__dirname, "../storage/pdf", pdfPath);
         try {
           await fs.access(filePath);
@@ -591,15 +547,9 @@ class PDFService {
         }
       } catch (dbError) {
         if (dbError.code === "ER_BAD_FIELD_ERROR") {
-          console.warn(
-            "bukti_pdf_path column does not exist, checking storage directly"
-          );
+          console.warn("bukti_pdf_path column does not exist, checking storage directly");
 
-          // Fallback: check if any PDF exists for this pendaftar in storage
-          const [pendaftarRows] = await pool.execute(
-            "SELECT no_pendaftaran FROM pendaftar_spmb WHERE id = ?",
-            [pendaftarId]
-          );
+          const [pendaftarRows] = await pool.execute("SELECT no_pendaftaran FROM pendaftar_spmb WHERE id = ?", [pendaftarId]);
 
           if (pendaftarRows.length === 0) {
             return { exists: false, message: "Data pendaftar tidak ditemukan" };
@@ -650,7 +600,6 @@ class PDFService {
     return colorMap[status] || "#6b7280";
   }
 
-  // Export Excel functionality (keeping your existing method)
   async generateExcelReport(data, reportType = "pendaftar") {
     const ExcelJS = require("exceljs");
     const workbook = new ExcelJS.Workbook();
@@ -665,7 +614,6 @@ class PDFService {
   async generatePendaftarExcel(workbook, pendaftarData) {
     const worksheet = workbook.addWorksheet("Data Pendaftar SPMB");
 
-    // Set column headers - Updated with your field names
     const columns = [
       { header: "No. Pendaftaran", key: "no_pendaftaran", width: 15 },
       { header: "Nama Lengkap", key: "nama_lengkap", width: 25 },
@@ -684,7 +632,6 @@ class PDFService {
 
     worksheet.columns = columns;
 
-    // Style header
     const headerRow = worksheet.getRow(1);
     headerRow.font = { bold: true };
     headerRow.fill = {
@@ -694,19 +641,13 @@ class PDFService {
     };
     headerRow.font = { color: { argb: "FFFFFFFF" }, bold: true };
 
-    // Add data rows
     pendaftarData.forEach((pendaftar, index) => {
       const row = worksheet.addRow({
         ...pendaftar,
-        tanggal_lahir: pendaftar.tanggal_lahir
-          ? new Date(pendaftar.tanggal_lahir).toLocaleDateString("id-ID")
-          : "",
-        tanggal_daftar: pendaftar.tanggal_daftar
-          ? new Date(pendaftar.tanggal_daftar).toLocaleDateString("id-ID")
-          : "",
+        tanggal_lahir: pendaftar.tanggal_lahir ? new Date(pendaftar.tanggal_lahir).toLocaleDateString("id-ID") : "",
+        tanggal_daftar: pendaftar.tanggal_daftar ? new Date(pendaftar.tanggal_daftar).toLocaleDateString("id-ID") : "",
       });
 
-      // Alternate row colors
       if ((index + 2) % 2 === 0) {
         row.fill = {
           type: "pattern",
@@ -716,7 +657,6 @@ class PDFService {
       }
     });
 
-    // Add borders
     worksheet.eachRow((row, rowNumber) => {
       row.eachCell((cell) => {
         cell.border = {
@@ -731,7 +671,6 @@ class PDFService {
     return await workbook.xlsx.writeBuffer();
   }
 
-  // Cleanup method for old PDF files
   async cleanupOldPDFs(olderThanDays = 30) {
     try {
       const storagePath = path.join(__dirname, "../storage/pdf");
