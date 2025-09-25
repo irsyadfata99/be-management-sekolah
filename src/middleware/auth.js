@@ -25,10 +25,7 @@ const authenticateToken = async (req, res, next) => {
 
     console.log("Token received:", token.substring(0, 20) + "...");
 
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "school_template_secret"
-    );
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "school_template_secret");
 
     console.log("Decoded token:", decoded);
 
@@ -42,20 +39,9 @@ const authenticateToken = async (req, res, next) => {
     }
 
     // FIXED: Query ke admin_users table (sama dengan auth route)
-    const [users] = await pool.execute(
-      `SELECT 
-        id, username, email, full_name, role, 
-        can_manage_students, can_manage_settings, can_export_data, can_manage_admins,
-        is_active, last_login 
-       FROM admin_users 
-       WHERE id = ? AND is_active = 1`,
-      [userId]
-    );
+    const [users] = await pool.execute("SELECT id, username, email, full_name, role, is_active FROM admin_users WHERE id = ? AND is_active = 1", [userId]);
 
-    console.log(
-      "Database query result:",
-      users.length > 0 ? "User found" : "User not found"
-    );
+    console.log("Database query result:", users.length > 0 ? "User found" : "User not found");
 
     if (users.length === 0) {
       return res.status(401).json({
